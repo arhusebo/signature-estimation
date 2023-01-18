@@ -31,20 +31,23 @@ def estimate_signat(resid: Signal, indices, siglen, shift):
     sig = running_sum/n_samples
     return sig
 
-def _rmse_shift(sigest, sigtruefunc, shiftmax=100):
+def _nmse_shift(sigest, sigtruefunc, shiftmax=100):
     siglen = len(sigest)
     sigestpad = np.pad(sigest, shiftmax)
-    sigestpad /= np.linalg.norm(sigestpad)
+    sigestpad /= np.linalg.norm(sigest)
     sigtrue = sigtruefunc(np.arange(siglen))
     sigtrue /= np.linalg.norm(sigtrue)
-    rmse = np.linalg.norm([sigestpad[i:i+siglen] - sigtrue for i in range(2*shiftmax)], axis=-1)
+    # Since both signature estimate and true signature are normalised,
+    # it is not neccesary to normalise the MSE estimate, i.e. by dividing
+    # by the true signal energy.
+    nmse = np.sum([(sigestpad[i:i+siglen] - sigtrue)**2 for i in range(2*shiftmax)], axis=-1)
     n = np.arange(2*shiftmax)-shiftmax
-    return rmse, n
+    return nmse, n
 
-def estimate_rmse(sigest, sigtruefunc, shiftmax=100):
-    rmse, n = _rmse_shift(sigest, sigtruefunc, shiftmax)
-    idxmin = np.argmin(rmse)
-    return rmse[idxmin], n[idxmin]
+def estimate_nmse(sigest, sigtruefunc, shiftmax=100):
+    nmse, n = _nmse_shift(sigest, sigtruefunc, shiftmax)
+    idxmin = np.argmin(nmse)
+    return nmse[idxmin], n[idxmin]
 
 
 def general_snr_experiment(sigfunc):
@@ -85,17 +88,17 @@ def general_snr_experiment(sigfunc):
         skpeaks, _ = scipy.signal.find_peaks(skenv, distance=avg_event_period/2)
         sigest_sk = estimate_signat(resid, skpeaks, sigestlen, sigestshift)
 
-        rmse[0, i], _ = estimate_rmse(sigest_irfs, sigfunc)
-        rmse[1, i], _ = estimate_rmse(sigest_med, sigfunc)
-        rmse[2, i], _ = estimate_rmse(sigest_sk, sigfunc)
+        rmse[0, i], _ = estimate_nmse(sigest_irfs, sigfunc)
+        rmse[1, i], _ = estimate_nmse(sigest_med, sigfunc)
+        rmse[2, i], _ = estimate_nmse(sigest_sk, sigfunc)
 
     legend = ["IRFS", "MED", "SK"]
 
-    G = GFigure(xaxis=snr_to_eval,
+    G = GFigure(xaxis=10*np.log10(snr_to_eval),
                 yaxis=rmse,
                 legend=legend,
                 xlabel="SNR (dB)",
-                ylabel="RMSE")
+                ylabel="NMSE")
     return G
 
 class ExperimentSet(gsim.AbstractExperimentSet):
@@ -110,7 +113,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         sigest[shift:shift+10] = 1.0
         sigest += np.random.randn(siglen)*.01
         shiftmax = 100
-        rmse, n = _rmse_shift(sigest, sigtrue, shiftmax)
+        rmse, n = _nmse_shift(sigest, sigtrue, shiftmax)
         
         G = GFigure(xaxis=n, yaxis=rmse)
         return G
