@@ -121,7 +121,8 @@ class ExperimentSet(gsim.AbstractExperimentSet):
     def experiment_1001(l_args):
 
         from data.uia import UiADataLoader
-        dl = UiADataLoader("path/to/dataset/ALT Bearing 2 h5/")
+        from data import uia_path
+        dl = UiADataLoader(uia_path)
         mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
         mf = dl["y2016-m09-d24/00-40-22 1000rpm - 51200Hz - 100LOR.h5"]
         
@@ -146,9 +147,10 @@ class ExperimentSet(gsim.AbstractExperimentSet):
     
     def experiment_1002(l_args):
         from data.unsw import UNSWDataLoader
-        dl = UNSWDataLoader("path/to/dataset/Test 1/")
-        mh = dl["6Hz/vib_000002663_06.mat"]
-        mf = dl["Multiple speeds/vib_000330272_20.mat"]
+        from data import unsw_path
+        dl = UNSWDataLoader(unsw_path)
+        mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
+        mf = dl["Test 1/Multiple speeds/vib_000330272_20.mat"]
         
         angfhz = 20 # angular frequency in Hz
         fs = 51200 # sample frequency
@@ -172,7 +174,8 @@ class ExperimentSet(gsim.AbstractExperimentSet):
     def experiment_1003(l_args):
 
         from data.cwru import CWRUDataLoader
-        dl = CWRUDataLoader("path/to/dataset/info.json")
+        from data import cwru_path
+        dl = CWRUDataLoader(cwru_path)
         mh = dl[100]
         mf = dl[112]
         

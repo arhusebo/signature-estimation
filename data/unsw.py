@@ -26,11 +26,3 @@ class UNSWDataLoader(DataLoader):
         pos = Signal(s, ts)
 
         return Measurement(vib, pos)
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    dl = UNSWDataLoader("../../unsw_dataset/Test 1/")
-    meas = dl["6Hz/vib_000002663_06.mat"]
-    
-    plt.plot(meas.vib.x, meas.vib.y)
-    plt.show()

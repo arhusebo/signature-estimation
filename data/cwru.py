@@ -32,8 +32,8 @@ class CWRUDataLoader(DataLoader):
 
 
     def __init__(self, path):
-        self.path = Path(path).parent
-        with open(path) as f:
+        self.path = Path(path)#.parent
+        with open(self.path/"info.json") as f:
             self.info = json.load(f)
         self.info["fs"] = 48.e3
 
@@ -57,11 +57,3 @@ class CWRUDataLoader(DataLoader):
         pos = Signal(s, ts)
 
         return Measurement(vib, pos)
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    dl = CWRUDataLoader("../../case_dataset/info.json")
-    meas = dl[109]
-    
-    plt.plot(meas.vib.x, meas.vib.y)
-    plt.show()

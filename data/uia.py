@@ -24,11 +24,3 @@ class UiADataLoader(DataLoader):
         pos = Signal.from_uniform_samples(s, 1/f["s"].attrs["Fs"])
 
         return Measurement(vib, pos)
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    dl = UiADataLoader("../../andreas_data/ALT Bearing 2 h5/")
-    meas = dl["y2016-m09-d20/00-00-20 100rpm - 51200Hz - 100LOR.h5"]
-    
-    plt.plot(meas.vib.x, meas.vib.y)
-    plt.show()
