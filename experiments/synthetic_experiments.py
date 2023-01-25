@@ -93,9 +93,11 @@ def general_snr_experiment(sigfunc):
         rmse[2, i], _ = estimate_nmse(sigest_sk, sigfunc)
 
     legend = ["IRFS", "MED", "SK"]
+    styles = ["o-", "^-", "d-"]
 
     G = GFigure(xaxis=10*np.log10(snr_to_eval),
                 yaxis=rmse,
+                styles=styles,
                 legend=legend,
                 xlabel="SNR (dB)",
                 ylabel="NMSE")
@@ -147,6 +149,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         return G
 
     def experiment_1006(l_args):
+        import matplotlib
         import matplotlib.pyplot as plt
         print("Combining previous experiments")
 
@@ -155,7 +158,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         l_G4 = ExperimentSet.load_GFigures(1004)[0]
         l_G5 = ExperimentSet.load_GFigures(1005)[0]
         
-        G = GFigure(figsize=(5.5, 5.0))
+        G = GFigure(figsize=(3.5, 3.0))
         G.l_subplots = l_G2.l_subplots +\
                        l_G3.l_subplots +\
                        l_G4.l_subplots +\
@@ -163,19 +166,16 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         
         # edit loaded GFigure
         signatlabels = ["A", "B", "C", "D"]
-        #methodstyles = ["o", "^", "d"]
         for i, subplt in enumerate(G.l_subplots):
             subplt.ylabel = f"NMSE ({signatlabels[i]})"
             subplt.xlabel = ""
-            #for j, crv in enumerate(subplt.l_curves):
-                #crv.mode = "plot"
-                #crv.style = methodstyles[j]
         G.l_subplots[-1].xlabel = "SNR (dB)"
 
         # draw GFigure and customise plotting
+        matplotlib.rcParams.update({"font.size": 8})
         fig = G.plot()
         ax = fig.get_axes()
-        ax[0].legend(ncol=3, bbox_to_anchor=(0.5, 1.5), loc="upper center")
+        ax[0].legend(ncol=3, bbox_to_anchor=(0.5, 1.8), loc="upper center")
         for i in range(len(ax)):
             ax[i].set_yscale("log")
             ax[i].grid(visible=True, which="both", axis="both")
