@@ -201,16 +201,53 @@ class ExperimentSet(gsim.AbstractExperimentSet):
     def experiment_1004(l_args):
         """This experiment combines the results of all experiments into
         a single GFigure"""
+        import matplotlib
+        import matplotlib.pyplot as plt
+
         l_G_uia = ExperimentSet.load_GFigures(1001)
         l_G_unsw = ExperimentSet.load_GFigures(1002)
         l_G_cwru = ExperimentSet.load_GFigures(1003)
-        G = GFigure(figsize=(5.5, 10.0))
+        G = GFigure(figsize=(3.5, 4.0))
         G.l_subplots = l_G_uia[0].l_subplots +\
                        l_G_unsw[0].l_subplots +\
                        l_G_cwru[0].l_subplots
         
-        G_sigest = GFigure(num_subplot_columns=3)
+        G_sigest = GFigure(num_subplot_columns=3, figsize=(3.5, 1.0))
         G_sigest.l_subplots = l_G_uia[1].l_subplots +\
-                       l_G_unsw[1].l_subplots +\
-                       l_G_cwru[1].l_subplots
-        return [G, G_sigest]
+                              l_G_unsw[1].l_subplots +\
+                              l_G_cwru[1].l_subplots
+        
+        # edit loaded GFigure
+        datalabels = ["UiA", "UNSW", "CWRU"]
+        for i, subplt in enumerate(G.l_subplots):
+            subplt.l_curves[0], subplt.l_curves[-1] = subplt.l_curves[-1], subplt.l_curves[0]
+            subplt.ylabel = f"True positive rate\n({datalabels[i]})"
+            subplt.xlabel = ""
+        G.l_subplots[-1].xlabel = "Detections"
+
+        for i, subplt in enumerate(G_sigest.l_subplots):
+            subplt.ylabel = ""
+            subplt.xlabel = "Revs"
+            for curve in subplt.l_curves:
+                curve.style = "k-"
+            
+        G_sigest.l_subplots[0].ylabel = "Signature\nestimate"
+
+        # draw GFigure and customise plotting
+        matplotlib.rcParams.update({"font.size": 8})
+        fig = G.plot()
+        ax = fig.get_axes()
+        ax[0].legend(ncol=3, bbox_to_anchor=(0.5, 1.6), loc="upper center")
+        ax[1].get_legend().remove()
+        ax[2].get_legend().remove()
+        plt.tight_layout()
+        
+        with matplotlib.rc_context({"lines.linewidth" : .5}):
+            fig_sigest = G_sigest.plot()
+        ax = fig_sigest.get_axes()
+        for i in range(len(ax)):
+            ax[i].grid(visible=False, which="both", axis="both")
+            ax[i].set_yticks([])
+        plt.tight_layout()
+
+        plt.show()
