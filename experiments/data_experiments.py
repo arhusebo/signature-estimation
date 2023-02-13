@@ -50,7 +50,7 @@ def update_scores_gfigure(G, methodname, ndets, mags):
                 legend=methodname,)
 
 
-def general_experiment(**kwargs) -> GFigure:
+def benchmark_experiment(**kwargs) -> GFigure:
     """Wrapper function of a general experiment to test all benchmark methods
     on one set of data.
     
@@ -74,7 +74,26 @@ def general_experiment(**kwargs) -> GFigure:
     ordmax = ordc+.5
 
     # IRFS method. Residuals are filtered using matched filter.
-    irfs_sigest = routines.irfs(resid, ordmin, ordmax)
+    initial_filters = np.zeros((2,medfiltsize), dtype=float)
+    # impulse
+    initial_filters[0, medfiltsize//2] = 1
+    initial_filters[0, medfiltsize//2+1] = -1
+    # step
+    initial_filters[1, :medfiltsize//2] = 1
+    initial_filters[1, medfiltsize//2:] = -1
+
+    scores = np.zeros((len(initial_filters),), dtype=float)
+    medfilts = np.zeros_like(initial_filters)
+
+    for i, initial_filter in enumerate(initial_filters):
+        scores[i], medfilts[i] = routines.score_med(resid,
+                                                    initial_filter,
+                                                    ordc,
+                                                    ordmin,
+                                                    ordmax,)
+    residf = routines.medfilt(resid, medfilts[np.argmax(scores)])
+    spos1 = routines.enedetloc(residf, ordmin, ordmax)
+    irfs_sigest = routines.irfs(resid, spos1, ordmin, ordmax)
     irfs_out = np.correlate(resid.y, irfs_sigest, mode="valid")
     irfs_filt = sig.Signal(irfs_out, resid.x[:-len(irfs_sigest)+1],
                         resid.uniform_samples)
@@ -82,24 +101,26 @@ def general_experiment(**kwargs) -> GFigure:
     print("IRFS done.")
 
     # MED method. Signal is filtered using filter obtained by MED.
-    med_filt = routines.medfilt(signal, medfiltsize)
+    medfiltest = routines.medest(signal.y, initial_filters[0])
+    med_filt = routines.medfilt(signal, medfiltest)
     med_ndets, med_mags = detect_and_sort(med_filt, ordc, ordmin, ordmax)
     print("MED done.")
 
     # AR-MED method. Residuals are filtered using filter obtained by AR-MED.
-    armed_filt = routines.medfilt(resid, medfiltsize)
+    armedfiltest = routines.medest(resid.y, initial_filters[0])
+    armed_filt = routines.medfilt(resid, armedfiltest)
     armed_ndets, armed_mags = detect_and_sort(armed_filt, ordc, ordmin, ordmax)
     print("AR-MED done.")
 
     # SK method. Signal is filtered using filter maximising SK.
-    sk_filt = routines.skfilt(signal, sknbands, fs)
+    sk_filt = routines.skfilt(signal)
     sk_ndets, sk_mags = detect_and_sort(sk_filt, ordc, ordmin, ordmax)
     print("SK done.")
 
     # AR-SK method. Residuals are filtered using filter maximising SK.
-    arsk_filt = routines.skfilt(resid, sknbands, fs)
+    arsk_filt = routines.skfilt(resid)
     arsk_ndets, arsk_mags = detect_and_sort(arsk_filt, ordc, ordmin, ordmax)
-    print("AR_SK done.")
+    print("AR-SK done.")
 
     G = GFigure(xlabel="Detected events",
                 ylabel="Fraction of true positives")
@@ -137,12 +158,12 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
         resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
 
-        G = general_experiment(signal = signal,
-                               resid = resid,
-                               fs = fs,
-                               ordc = 6.7087166, # contact angle corrected
-                               medfiltsize = 100,
-                               sknbands = 100,)
+        G = benchmark_experiment(signal = signal,
+                                 resid = resid,
+                                 fs = fs,
+                                 ordc = 6.7087166, # contact angle corrected
+                                 medfiltsize = 100,
+                                 sknbands = 100,)
         return G
     
     def experiment_1002(l_args):
@@ -163,12 +184,12 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         signal = sig.Signal.from_uniform_samples(signalt.y, angfhz/fs)
         resid = sig.Signal.from_uniform_samples(residt.y, angfhz/fs)
 
-        G = general_experiment(signal = signal,
-                               resid = resid,
-                               fs = fs,
-                               ordc = 3.56,
-                               medfiltsize = 100,
-                               sknbands = 100,)
+        G = benchmark_experiment(signal = signal,
+                                 resid = resid,
+                                 fs = fs,
+                                 ordc = 3.56,
+                                 medfiltsize = 100,
+                                 sknbands = 100,)
         return G
 
     def experiment_1003(l_args):
@@ -190,12 +211,12 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
         resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
 
-        G = general_experiment(signal = signal,
-                               resid = resid,
-                               fs = fs,
-                               ordc = 5.4152,
-                               medfiltsize = 100,
-                               sknbands = 100,)
+        G = benchmark_experiment(signal = signal,
+                                 resid = resid,
+                                 fs = fs,
+                                 ordc = 5.4152,
+                                 medfiltsize = 100,
+                                 sknbands = 100,)
         return G
     
     def experiment_1004(l_args):

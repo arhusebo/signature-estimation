@@ -62,8 +62,14 @@ def general_snr_experiment(sigfunc):
 
     snr_to_eval = np.logspace(-2, 0, 10)
 
-    sigestlen = 200
-    sigestshift = -20
+    sigestlen = 400
+    sigestshift = -150
+
+    ordc = ordf
+    ordmin = ordc-.5
+    ordmax = ordc+.5
+
+    medfiltsize = 100
 
     rmse = np.zeros((3, len(snr_to_eval)), dtype=float)
 
@@ -71,19 +77,38 @@ def general_snr_experiment(sigfunc):
         # generate residuals at given snr
         resid = generate_resid(sigfunc, snr, siglen, fs, fss, ordf, seed=seed)
 
+        # IRFS method. Residuals are filtered using matched filter.
+        initial_filters = np.zeros((2,medfiltsize), dtype=float)
+        # impulse
+        initial_filters[0, medfiltsize//2] = 1
+        initial_filters[0, medfiltsize//2+1] = -1
+        # step
+        initial_filters[1, :medfiltsize//2] = 1
+        initial_filters[1, medfiltsize//2:] = -1
+
+        scores = np.zeros((len(initial_filters),), dtype=float)
+        medfilts = np.zeros_like(initial_filters)
+
+        for j, initial_filter in enumerate(initial_filters):
+            scores[j], medfilts[j] = routines.score_med(resid,
+                                                        initial_filter,
+                                                        ordc,
+                                                        ordmin,
+                                                        ordmax,)
+        residf = routines.medfilt(resid, medfilts[np.argmax(scores)])
+        spos1 = routines.enedetloc(residf, ordmin, ordmax)
         # estimate signature using IRFS
-        sigest_irfs = routines.irfs(resid, 4.5, 5.5,
-                                    sigsize=sigestlen,
-                                    sigshift=sigestshift,)
-        
+        sigest_irfs = routines.irfs(resid, spos1, ordmin, ordmax,
+                                    sigsize=sigestlen, sigshift=sigestshift)
+
         # estimate signature using MED and peak detection
-        medout = routines.medfilt(resid, 100)
+        medout = routines.medfilt(resid, medfilts[0])
         medenv = abs(scipy.signal.hilbert(medout.y))
         medpeaks, _ = scipy.signal.find_peaks(medenv, distance=avg_event_period/2)
         sigest_med = estimate_signat(resid, medpeaks, sigestlen, sigestshift)
         
         # estimate signature using SK and peak detection
-        skout = routines.skfilt(resid, 100)
+        skout = routines.skfilt(resid)
         skenv = abs(skout.y)
         skpeaks, _ = scipy.signal.find_peaks(skenv, distance=avg_event_period/2)
         sigest_sk = estimate_signat(resid, skpeaks, sigestlen, sigestshift)
@@ -188,3 +213,15 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         
         plt.tight_layout()
         plt.show()
+    
+    def experiment_1007(l_args):
+        # synthethic data generator parameters
+        seed = 0
+        siglen = 100000 # length of synthetic signal
+        fs = 51200 # virtual sample frequency
+        fss = 1000/60 # shaft frequency
+        ordf = 5.0 # fault order
+        sigfunc = lambda n: (n>=0)*np.sinc(n/8+1)
+        snr = .1
+        resid = generate_resid(sigfunc, snr, siglen, fs, fss, ordf, seed=seed)
+        return GFigure(xaxis=resid.x, yaxis=resid.y)
