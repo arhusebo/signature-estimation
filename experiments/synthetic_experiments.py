@@ -53,7 +53,6 @@ def estimate_nmse(sigest, sigtruefunc, shiftmax=100):
 def general_snr_experiment(sigfunc, mc_iterations=10):
 
     # synthethic data generator parameters
-    seed = 0
     siglen = 100000 # length of synthetic signal
     fs = 51200 # virtual sample frequency
     fss = 1000/60 # shaft frequency
@@ -76,7 +75,7 @@ def general_snr_experiment(sigfunc, mc_iterations=10):
     for i, snr in enumerate(snr_to_eval):
         for j in range(mc_iterations):
             # generate residuals at given snr
-            resid = generate_resid(sigfunc, snr, siglen, fs, fss, ordf, seed=seed)
+            resid = generate_resid(sigfunc, snr, siglen, fs, fss, ordf, seed=j)
 
             initial_filters = np.zeros((2,medfiltsize), dtype=float)
             # impulse
