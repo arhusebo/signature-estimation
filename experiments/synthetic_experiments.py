@@ -7,13 +7,19 @@ import routines
 import gsim
 from gsim.gfigure import GFigure
 
+def sigtilde(signat, sigloc, n):
+    return np.sum([signat(np.arange(n)-n0) for n0 in sigloc], axis=0)
 
-def generate_resid(signat, snr, siglen, fs, fss, ordf, seed=0):
+def generate_resid(signat, snr, siglen, fs, fss, ordf, stdz=0.0, arate=0, signata=None, seed=0):
     rng = np.random.default_rng(seed)
     df = (fs/fss)/ordf
     sigloc = np.arange(0, siglen, df, dtype=float)
-    sigloc += rng.standard_normal(len(sigloc))*50
-    signal = np.sum([signat(np.arange(siglen)-n0) for n0 in sigloc], axis=0)
+    sigloc += rng.standard_normal(len(sigloc))*stdz
+    signal = sigtilde(signat, sigloc, siglen)
+
+    sigloca = rng.uniform(0, siglen, arate)
+    signal += sigtilde(signata, sigloca, siglen)
+
     sigpow = np.var(signal)
     noisepow = sigpow/snr
     noise = rng.standard_normal(siglen) * np.sqrt(noisepow)
@@ -50,7 +56,7 @@ def estimate_nmse(sigest, sigtruefunc, shiftmax=100):
     return nmse[idxmin], n[idxmin]
 
 
-def general_snr_experiment(sigfunc, mc_iterations=10):
+def general_snr_experiment(n_anomalous=0, mc_iterations=10):
 
     # synthethic data generator parameters
     siglen = 100000 # length of synthetic signal
@@ -58,6 +64,8 @@ def general_snr_experiment(sigfunc, mc_iterations=10):
     fss = 1000/60 # shaft frequency
     ordf = 5.0 # fault order
     avg_event_period = (fs/fss)/ordf # in samples
+    sigfunc = lambda n: (n>=0)*np.sinc(n/8+1)
+    sigfunca = lambda n: (n>=0)*np.sinc(n/2+1)
 
     snr_to_eval = np.logspace(-2, 0, 5)
 
@@ -75,7 +83,15 @@ def general_snr_experiment(sigfunc, mc_iterations=10):
     for i, snr in enumerate(snr_to_eval):
         for j in range(mc_iterations):
             # generate residuals at given snr
-            resid = generate_resid(sigfunc, snr, siglen, fs, fss, ordf, seed=j)
+            resid = generate_resid(sigfunc,
+                                   snr,
+                                   siglen,
+                                   fs,
+                                   fss,
+                                   ordf,
+                                   signata = sigfunca,
+                                   arate = n_anomalous,
+                                   seed=j)
 
             initial_filters = np.zeros((2,medfiltsize), dtype=float)
             # impulse
@@ -147,49 +163,28 @@ class ExperimentSet(gsim.AbstractExperimentSet):
     def experiment_1002(l_args):
         """Benchmark methods under varying SNR for signature type A"""
 
-        sigfunc = lambda n: (n>=0)*np.sinc(n/8+1)
-        G = general_snr_experiment(sigfunc)
+        G = general_snr_experiment(n_anomalous=0)
         return G
 
     def experiment_1003(l_args):
-        """Benchmark methods under varying SNR for signature type B"""
-
-        sigfunc = lambda n: (n>=0)*np.sinc(n/2+1)
-        G = general_snr_experiment(sigfunc)
+        """Benchmark methods under varying SNR for signature type A"""
+        
+        G = general_snr_experiment(n_anomalous=100)
         return G
-    
+
     def experiment_1004(l_args):
-        """Benchmark methods under varying SNR for signature type C"""
-
-        sigfunc = lambda n: (n>=0)*np.exp(-abs(n)/10)
-        G = general_snr_experiment(sigfunc)
-        return G
-    
-    def experiment_1005(l_args):
-        """Benchmark methods under varying SNR for signature type D"""
-
-        sigfunc = lambda n: (n<10)*(n>=0)*1.0
-        G = general_snr_experiment(sigfunc)
-        return G
-
-    def experiment_1006(l_args):
         import matplotlib
         import matplotlib.pyplot as plt
         print("Combining previous experiments")
 
         l_G2 = ExperimentSet.load_GFigures(1002)[0]
         l_G3 = ExperimentSet.load_GFigures(1003)[0]
-        l_G4 = ExperimentSet.load_GFigures(1004)[0]
-        l_G5 = ExperimentSet.load_GFigures(1005)[0]
         
-        G = GFigure(figsize=(3.5, 3.0))
-        G.l_subplots = l_G2.l_subplots +\
-                       l_G3.l_subplots +\
-                       l_G4.l_subplots +\
-                       l_G5.l_subplots
+        G = GFigure(figsize=(3.5, 2.5))
+        G.l_subplots = l_G2.l_subplots + l_G3.l_subplots
         
         # edit loaded GFigure
-        signatlabels = ["A", "B", "C", "D"]
+        signatlabels = ["A", "B"]
         for i, subplt in enumerate(G.l_subplots):
             subplt.ylabel = f"NMSE ({signatlabels[i]})"
             subplt.xlabel = ""
@@ -199,9 +194,9 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         matplotlib.rcParams.update({"font.size": 8})
         fig = G.plot()
         ax = fig.get_axes()
-        ax[0].legend(ncol=3, bbox_to_anchor=(0.5, 1.8), loc="upper center")
+        ax[0].legend(ncol=3, bbox_to_anchor=(0.5, 1.5), loc="upper center")
         for i in range(len(ax)):
-            ax[i].set_yscale("log")
+            #ax[i].set_yscale("log")
             ax[i].grid(visible=True, which="both", axis="both")
             ax[0].get_shared_x_axes().join(ax[0], ax[i])
 
@@ -221,6 +216,15 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         fss = 1000/60 # shaft frequency
         ordf = 5.0 # fault order
         sigfunc = lambda n: (n>=0)*np.sinc(n/8+1)
-        snr = .1
-        resid = generate_resid(sigfunc, snr, siglen, fs, fss, ordf, seed=seed)
+        sigfunca = lambda n: (n>=0)*np.sinc(n/2+1)
+        snr = 1
+        resid = generate_resid(sigfunc,
+                               snr,
+                               siglen,
+                               fs,
+                               fss,
+                               ordf,
+                               signata = sigfunca,
+                               arate = 100,
+                               seed=seed)
         return GFigure(xaxis=resid.x, yaxis=resid.y)
