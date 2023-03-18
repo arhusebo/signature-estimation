@@ -51,7 +51,7 @@ def irfs(data: sig.Signal,
                                         len(det_list[i-1].h))
         det_i = sig.MatchedFilterEnvelopeDetector(sig_i)
         det_list.append(det_i)
-    return sig_i
+    return sig_i, ordf_i, mu_i, kappa_i
 
 
 def medest(x: npt.ArrayLike, f0: npt.ArrayLike, its: int=10) -> np.ndarray:

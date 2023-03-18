@@ -11,7 +11,7 @@ import gsim
 from gsim.gfigure import GFigure
 
 
-def detect_and_sort(filt: sig.Signal, ordc, ordmin, ordmax, maxevents=10000):
+def detect_and_sort(filt: sig.Signal, ordc, ordmin, ordmax, weightfunc=None, maxevents=10000):
     """Detects events using peak detection and sorts them by peak height.
     Returns 'number of detections' in ascending order and the respective
     event spectrum magnitude evaluated at the fault order. Used to score each
@@ -25,8 +25,11 @@ def detect_and_sort(filt: sig.Signal, ordc, ordmin, ordmax, maxevents=10000):
     else: env = abs(scipy.signal.hilbert(filt.y))
     # detect events
     peaks, properties = scipy.signal.find_peaks(env, height=0, distance=spf/2)
-    idx_sorted = np.argsort(properties["peak_heights"])[::-1]
     spos = filt.x[peaks]
+    if weightfunc is not None: u = weightfunc(spos)
+    else: u = np.ones_like(spos, dtype=int)
+    uy = u*properties["peak_heights"]
+    idx_sorted = np.argsort(uy)[::-1]
     # Estimate fault order. Uses all detected peaks, so may be inaccurate if
     # detections are poor. Function 'find_order' is expensive, hence order is
     # estimated once rather than for every number of peaks.
@@ -39,7 +42,6 @@ def detect_and_sort(filt: sig.Signal, ordc, ordmin, ordmax, maxevents=10000):
         mags[i] = abs(evt.event_spectrum(ordf, spos))
     return ndets, mags
 
-
 def update_scores_gfigure(G, methodname, ndets, mags):
     """Updates a GFigure with the score of method 'methodname'."""
     mag = mags
@@ -50,7 +52,7 @@ def update_scores_gfigure(G, methodname, ndets, mags):
                 legend=methodname,)
 
 
-def benchmark_experiment(**kwargs) -> GFigure:
+def benchmark_experiment(sigsize, sigshift, **kwargs) -> GFigure:
     """Wrapper function of a general experiment to test all benchmark methods
     on one set of data.
     
@@ -65,10 +67,9 @@ def benchmark_experiment(**kwargs) -> GFigure:
     """
     signal = kwargs["signal"]
     resid = kwargs["resid"]
-    fs = kwargs["fs"]
     ordc = kwargs["ordc"]
     medfiltsize = kwargs["medfiltsize"]
-    sknbands = kwargs["sknbands"]
+    sknperseg = kwargs["sknperseg"]
 
     ordmin = ordc-.5
     ordmax = ordc+.5
@@ -93,11 +94,20 @@ def benchmark_experiment(**kwargs) -> GFigure:
                                                     ordmax,)
     residf = routines.medfilt(resid, medfilts[np.argmax(scores)])
     spos1 = routines.enedetloc(residf, ordmin, ordmax)
-    irfs_sigest = routines.irfs(resid, spos1, ordmin, ordmax)
+    irfs_sigest, irfs_ordf, irfs_mu, irfs_kappa = routines.irfs(resid,
+                                                                spos1,
+                                                                ordmin,
+                                                                ordmax,
+                                                                sigsize,
+                                                                sigshift)
     irfs_out = np.correlate(resid.y, irfs_sigest, mode="valid")
     irfs_filt = sig.Signal(irfs_out, resid.x[:-len(irfs_sigest)+1],
                         resid.uniform_samples)
-    irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, ordc, ordmin, ordmax)
+    def irfs_weight(spos):
+        z = evt.map_circle(irfs_ordf, spos)
+        u = scipy.stats.vonmises.pdf(z, irfs_kappa, loc=irfs_mu)
+        return u
+    irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, ordc, ordmin, ordmax, weightfunc=irfs_weight)
     print("IRFS done.")
 
     # MED method. Signal is filtered using filter obtained by MED.
@@ -113,12 +123,12 @@ def benchmark_experiment(**kwargs) -> GFigure:
     print("AR-MED done.")
 
     # SK method. Signal is filtered using filter maximising SK.
-    sk_filt = routines.skfilt(signal)
+    sk_filt = routines.skfilt(signal, sknperseg)
     sk_ndets, sk_mags = detect_and_sort(sk_filt, ordc, ordmin, ordmax)
     print("SK done.")
 
     # AR-SK method. Residuals are filtered using filter maximising SK.
-    arsk_filt = routines.skfilt(resid)
+    arsk_filt = routines.skfilt(resid, sknperseg)
     arsk_ndets, arsk_mags = detect_and_sort(arsk_filt, ordc, ordmin, ordmax)
     print("AR-SK done.")
 
@@ -134,7 +144,15 @@ def benchmark_experiment(**kwargs) -> GFigure:
                        yaxis=irfs_sigest,
                        xlabel="Revs",
                        ylabel="Signature estimate")
-    return [G, G_sigest]
+    
+    G_filt = GFigure()
+    G_filt.next_subplot(xaxis=irfs_filt.x, yaxis=irfs_filt.y, ylabel="IRFS")
+    G_filt.next_subplot(xaxis=med_filt.x, yaxis=med_filt.y, ylabel="MED")
+    G_filt.next_subplot(xaxis=armed_filt.x, yaxis=armed_filt.y, ylabel="AR-MED")
+    G_filt.next_subplot(xaxis=sk_filt.x, yaxis=sk_filt.y, ylabel="SK")
+    G_filt.next_subplot(xaxis=arsk_filt.x, yaxis=arsk_filt.y, ylabel="AR-SK")
+
+    return [G, G_sigest, G_filt]
 
 
 class ExperimentSet(gsim.AbstractExperimentSet):
@@ -158,12 +176,14 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
         resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
 
-        G = benchmark_experiment(signal = signal,
+        G = benchmark_experiment(sigsize = 400,
+                                 sigshift = -150,
+                                 signal = signal,
                                  resid = resid,
                                  fs = fs,
                                  ordc = 6.7087166, # contact angle corrected
                                  medfiltsize = 100,
-                                 sknbands = 100,)
+                                 sknperseg = 1000,)
         return G
     
     def experiment_1002(l_args):
@@ -171,9 +191,9 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         from data import unsw_path
         dl = UNSWDataLoader(unsw_path)
         mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
-        mf = dl["Test 1/Multiple speeds/vib_000330272_20.mat"]
+        mf = dl["Test 1/6Hz/vib_000356575_06.mat"]
         
-        angfhz = 20 # angular frequency in Hz
+        angfhz = 6 # angular frequency in Hz
         fs = 51200 # sample frequency
         signalt = mf.vib # signal in time domain
         model = sig.ARModel.from_signal(mh.vib[:10000], 41) # AR model
@@ -184,12 +204,14 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         signal = sig.Signal.from_uniform_samples(signalt.y, angfhz/fs)
         resid = sig.Signal.from_uniform_samples(residt.y, angfhz/fs)
 
-        G = benchmark_experiment(signal = signal,
+        G = benchmark_experiment(sigsize = 200,
+                                 sigshift = -100,
+                                 signal = signal,
                                  resid = resid,
                                  fs = fs,
                                  ordc = 3.56,
                                  medfiltsize = 100,
-                                 sknbands = 100,)
+                                 sknperseg = 256,)
         return G
 
     def experiment_1003(l_args):
@@ -198,9 +220,9 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         from data import cwru_path
         dl = CWRUDataLoader(cwru_path)
         mh = dl[100]
-        mf = dl[112]
+        mf = dl[175]
         
-        rpm = dl.info["112"]["rpm"] # angular frequency in Hz
+        rpm = dl.info["175"]["rpm"] # angular frequency in Hz
         fs = 51200 # sample frequency
         signalt = mf.vib # signal in time domain
         model = sig.ARModel.from_signal(mh.vib[:10000], 75) # AR model
@@ -211,12 +233,14 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
         resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
 
-        G = benchmark_experiment(signal = signal,
+        G = benchmark_experiment(sigsize = 400,
+                                 sigshift = -150,
+                                 signal = signal,
                                  resid = resid,
                                  fs = fs,
                                  ordc = 5.4152,
                                  medfiltsize = 100,
-                                 sknbands = 100,)
+                                 sknperseg = 256,)
         return G
     
     def experiment_1004(l_args):
@@ -241,7 +265,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         # edit loaded GFigure
         datalabels = ["UiA", "UNSW", "CWRU"]
         for i, subplt in enumerate(G.l_subplots):
-            subplt.l_curves[0], subplt.l_curves[-1] = subplt.l_curves[-1], subplt.l_curves[0]
+            #subplt.l_curves[0], subplt.l_curves[-1] = subplt.l_curves[-1], subplt.l_curves[0]
             subplt.ylabel = f"True positive rate\n({datalabels[i]})"
             subplt.xlabel = ""
         G.l_subplots[-1].xlabel = "Detections"
