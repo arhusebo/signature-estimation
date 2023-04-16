@@ -71,10 +71,12 @@ def benchmark_experiment(sigsize, sigshift, **kwargs) -> GFigure:
     medfiltsize = kwargs["medfiltsize"]
     sknperseg = kwargs["sknperseg"]
 
+    use_irfs_eosp = False # use eosp estimates from irfs vs peak detection
+
     ordmin = ordc-.5
     ordmax = ordc+.5
 
-    # IRFS method. Residuals are filtered using matched filter.
+    # Residuals are pre-filtered using .
     initial_filters = np.zeros((2,medfiltsize), dtype=float)
     # impulse
     initial_filters[0, medfiltsize//2] = 1
@@ -93,21 +95,31 @@ def benchmark_experiment(sigsize, sigshift, **kwargs) -> GFigure:
                                                     ordmin,
                                                     ordmax,)
     residf = routines.medfilt(resid, medfilts[np.argmax(scores)])
+
+    # IRFS method.
     spos1 = routines.enedetloc(residf, ordmin, ordmax)
-    irfs_sigest, irfs_ordf, irfs_mu, irfs_kappa = routines.irfs(resid,
-                                                                spos1,
-                                                                ordmin,
-                                                                ordmax,
-                                                                sigsize,
-                                                                sigshift)
-    irfs_out = np.correlate(resid.y, irfs_sigest, mode="valid")
-    irfs_filt = sig.Signal(irfs_out, resid.x[:-len(irfs_sigest)+1],
-                        resid.uniform_samples)
-    def irfs_weight(spos):
-        z = evt.map_circle(irfs_ordf, spos)
-        u = scipy.stats.vonmises.pdf(z, irfs_kappa, loc=irfs_mu)
-        return u
-    irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, ordc, ordmin, ordmax, weightfunc=irfs_weight)
+    irfs_result = routines.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
+
+    if use_irfs_eosp:
+        irfs_val_to_sort = irfs_result.magnitude * irfs_result.certainty
+        irfs_idx = np.argsort(irfs_val_to_sort)[::-1]
+        irfs_nvals = len(irfs_result.eosp)
+        irfs_ndets = np.arange(irfs_nvals)+1
+        irfs_mags = np.zeros((irfs_nvals,), dtype=float)
+        for i in range(irfs_nvals):
+            spos = irfs_result.eosp[irfs_idx][:i+1]
+            irfs_mags[i] = abs(evt.event_spectrum(irfs_result.ordf, spos))
+
+    else:
+        irfs_out = np.correlate(resid.y, irfs_result.sigest, mode="valid")
+        irfs_filt = sig.Signal(irfs_out, resid.x[:-len(irfs_result.sigest)+1],
+                            resid.uniform_samples)
+        def irfs_weight(spos):
+            z = evt.map_circle(irfs_result.ordf, spos)
+            u = scipy.stats.vonmises.pdf(z, irfs_result.kappa, loc=irfs_result.mu)
+            return u
+        irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, ordc, ordmin, ordmax, weightfunc=irfs_weight)
+    
     print("IRFS done.")
 
     # MED method. Signal is filtered using filter obtained by MED.
@@ -140,8 +152,8 @@ def benchmark_experiment(sigsize, sigshift, **kwargs) -> GFigure:
     update_scores_gfigure(G, "SK", sk_ndets, sk_mags)
     update_scores_gfigure(G, "AR-SK", arsk_ndets, arsk_mags)
 
-    G_sigest = GFigure(xaxis=resid.x[:len(irfs_sigest)],
-                       yaxis=irfs_sigest,
+    G_sigest = GFigure(xaxis=resid.x[:len(irfs_result.sigest)],
+                       yaxis=irfs_result.sigest,
                        xlabel="Revs",
                        ylabel="Signature estimate")
     
