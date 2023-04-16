@@ -16,6 +16,7 @@ def irfs(data: sig.Signal,
          ordmax: float,
          sigsize: int = 400,
          sigshift: int = -150,
+         hys: float = .01,
          enedet_max_loc_error: int = 10,
          n_iter: int = 10,
          threshold_trials = 10,) -> np.ndarray:
@@ -34,15 +35,14 @@ def irfs(data: sig.Signal,
     # ith iteration
     det1 = sig.MatchedFilterEnvelopeDetector(signat1)
     stat1 = det1.statistic(data)
-    hys1 = .01
     norm1 = np.linalg.norm(signat1)
-    thr1 = utl.best_threshold(stat1, ordmin, ordmax, hys=hys1,
+    thr1 = utl.best_threshold(stat1, ordmin, ordmax, hys=hys,
                               n=threshold_trials)/norm1
     det_list = [det1]
     for i in range(1, n_iter-1):
         stat_i = det_list[i-1].statistic(data)
         thr_i = thr1*np.linalg.norm(det_list[i-1].h)
-        cmp_i = sig.Comparison.from_comparator(stat_i, thr_i, thr_i*hys1)
+        cmp_i = sig.Comparison.from_comparator(stat_i, thr_i, thr_i*hys)
         spos_i, mag_i = np.asarray(sig.matched_filter_location_estimates(cmp_i))
         ordf_i, _ = utl.find_order(spos_i, ordmin, ordmax)
         mu_i, kappa_i = evt.fit_vonmises(ordf_i, spos_i)
@@ -110,11 +110,11 @@ def enedetloc(data: sig.Signal,
             ordmin: float,
             ordmax: float,
             enedetsize: int = 50,
+            hys: float = .8,
             threshold_trials: int = 10) -> np.ndarray:
     """Detect and return locations of events using an energy detector"""
     det = sig.EnergyDetector(enedetsize)
     stat = det.statistic(data)
-    hys = .8
     thr = utl.best_threshold(stat, ordmin, ordmax, hys=hys, dettype="ed",
                               n=threshold_trials)
     cmp = sig.Comparison.from_comparator(stat, thr, hys*thr)
