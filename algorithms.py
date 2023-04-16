@@ -1,3 +1,4 @@
+from collections import namedtuple
 import numpy as np
 import numpy.typing as npt
 import scipy.signal
@@ -6,6 +7,8 @@ import faultevent.event as evt
 import faultevent.signal as sig
 from faultevent import util as utl
 
+IRFSResult = namedtuple("IRFSResult",
+                        ["sigest", "eosp", "magnitude", "certainty", "ordf", "mu", "kappa"])
 
 def irfs(data: sig.Signal,
          spos1: npt.ArrayLike,
@@ -31,7 +34,7 @@ def irfs(data: sig.Signal,
     # ith iteration
     det1 = sig.MatchedFilterEnvelopeDetector(signat1)
     stat1 = det1.statistic(data)
-    hys1 = .2
+    hys1 = .01
     norm1 = np.linalg.norm(signat1)
     thr1 = utl.best_threshold(stat1, ordmin, ordmax, hys=hys1,
                               n=threshold_trials)/norm1
@@ -40,7 +43,7 @@ def irfs(data: sig.Signal,
         stat_i = det_list[i-1].statistic(data)
         thr_i = thr1*np.linalg.norm(det_list[i-1].h)
         cmp_i = sig.Comparison.from_comparator(stat_i, thr_i, thr_i*hys1)
-        spos_i = np.asarray(sig.matched_filter_location_estimates(cmp_i))
+        spos_i, mag_i = np.asarray(sig.matched_filter_location_estimates(cmp_i))
         ordf_i, _ = utl.find_order(spos_i, ordmin, ordmax)
         mu_i, kappa_i = evt.fit_vonmises(ordf_i, spos_i)
         z_i = evt.map_circle(ordf_i, spos_i)
@@ -51,7 +54,8 @@ def irfs(data: sig.Signal,
                                         len(det_list[i-1].h))
         det_i = sig.MatchedFilterEnvelopeDetector(sig_i)
         det_list.append(det_i)
-    return sig_i, ordf_i, mu_i, kappa_i
+    result = IRFSResult(sig_i, spos_i, mag_i, crt_i, ordf_i, mu_i, kappa_i)
+    return result
 
 
 def medest(x: npt.ArrayLike, f0: npt.ArrayLike, its: int=10) -> np.ndarray:
