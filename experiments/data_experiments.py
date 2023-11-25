@@ -5,7 +5,7 @@ import faultevent.signal as sig
 import faultevent.event as evt
 import faultevent.util as utl
 
-import routines
+import algorithms
 
 import gsim
 from gsim.gfigure import GFigure
@@ -52,53 +52,50 @@ def update_scores_gfigure(G, methodname, ndets, mags):
                 legend=methodname,)
 
 
-def benchmark_experiment(sigsize, sigshift, **kwargs) -> GFigure:
+def benchmark_experiment(sigsize, sigshift, signal, resid, ordc,
+                         medfiltsize, sknperseg,
+                         use_irfs_eosp = False) -> GFigure:
     """Wrapper function of a general experiment to test all benchmark methods
     on one set of data.
     
-    Keyword arguments:
+    Arguments:
     signal -- faultevent.signal.Signal object containing vibrations in shaft domain
     resid -- faultevent.signal.Signal object containing AR residuals in shaft domain
-    fs -- sample frequency
     ordc -- characteristic fault order
     medfiltsize -- MED filter size
     sknbands -- number of frequency bands for SK estimation
     
+    Keyword arguments:
+    use_irfs_eosp -- whether to use EOSP estimates from IRFS method or
+    peak detection algorithm
     """
-    signal = kwargs["signal"]
-    resid = kwargs["resid"]
-    ordc = kwargs["ordc"]
-    medfiltsize = kwargs["medfiltsize"]
-    sknperseg = kwargs["sknperseg"]
-
-    use_irfs_eosp = False # use eosp estimates from irfs vs peak detection
 
     ordmin = ordc-.5
     ordmax = ordc+.5
 
-    # Residuals are pre-filtered using .
+    # Residuals are pre-filtered using MED.
     initial_filters = np.zeros((2,medfiltsize), dtype=float)
-    # impulse
+    # Impulse condition:
     initial_filters[0, medfiltsize//2] = 1
     initial_filters[0, medfiltsize//2+1] = -1
-    # step
+    # Step condition:
     initial_filters[1, :medfiltsize//2] = 1
     initial_filters[1, medfiltsize//2:] = -1
 
+    # Find best pre-filtering MED filter for initial detection
     scores = np.zeros((len(initial_filters),), dtype=float)
     medfilts = np.zeros_like(initial_filters)
-
     for i, initial_filter in enumerate(initial_filters):
-        scores[i], medfilts[i] = routines.score_med(resid,
+        scores[i], medfilts[i] = algorithms.score_med(resid,
                                                     initial_filter,
                                                     ordc,
                                                     ordmin,
                                                     ordmax,)
-    residf = routines.medfilt(resid, medfilts[np.argmax(scores)])
+    residf = algorithms.medfilt(resid, medfilts[np.argmax(scores)])
 
     # IRFS method.
-    spos1 = routines.enedetloc(residf, ordmin, ordmax)
-    irfs_result = routines.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
+    spos1 = algorithms.enedetloc(residf, ordmin, ordmax) # First iteration
+    irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
 
     if use_irfs_eosp:
         irfs_val_to_sort = irfs_result.magnitude * irfs_result.certainty
@@ -123,24 +120,24 @@ def benchmark_experiment(sigsize, sigshift, **kwargs) -> GFigure:
     print("IRFS done.")
 
     # MED method. Signal is filtered using filter obtained by MED.
-    medfiltest = routines.medest(signal.y, initial_filters[0])
-    med_filt = routines.medfilt(signal, medfiltest)
+    medfiltest = algorithms.medest(signal.y, initial_filters[0])
+    med_filt = algorithms.medfilt(signal, medfiltest)
     med_ndets, med_mags = detect_and_sort(med_filt, ordc, ordmin, ordmax)
     print("MED done.")
 
     # AR-MED method. Residuals are filtered using filter obtained by AR-MED.
-    armedfiltest = routines.medest(resid.y, initial_filters[0])
-    armed_filt = routines.medfilt(resid, armedfiltest)
+    armedfiltest = algorithms.medest(resid.y, initial_filters[0])
+    armed_filt = algorithms.medfilt(resid, armedfiltest)
     armed_ndets, armed_mags = detect_and_sort(armed_filt, ordc, ordmin, ordmax)
     print("AR-MED done.")
 
     # SK method. Signal is filtered using filter maximising SK.
-    sk_filt = routines.skfilt(signal, sknperseg)
+    sk_filt = algorithms.skfilt(signal, sknperseg)
     sk_ndets, sk_mags = detect_and_sort(sk_filt, ordc, ordmin, ordmax)
     print("SK done.")
 
     # AR-SK method. Residuals are filtered using filter maximising SK.
-    arsk_filt = routines.skfilt(resid, sknperseg)
+    arsk_filt = algorithms.skfilt(resid, sknperseg)
     arsk_ndets, arsk_mags = detect_and_sort(arsk_filt, ordc, ordmin, ordmax)
     print("AR-SK done.")
 
@@ -192,7 +189,6 @@ class ExperimentSet(gsim.AbstractExperimentSet):
                                  sigshift = -150,
                                  signal = signal,
                                  resid = resid,
-                                 fs = fs,
                                  ordc = 6.7087166, # contact angle corrected
                                  medfiltsize = 100,
                                  sknperseg = 1000,)
@@ -220,8 +216,8 @@ class ExperimentSet(gsim.AbstractExperimentSet):
                                  sigshift = -100,
                                  signal = signal,
                                  resid = resid,
-                                 fs = fs,
-                                 ordc = 3.56,
+                                 #ordc = 3.56,
+                                 ordc = 5.42,
                                  medfiltsize = 100,
                                  sknperseg = 256,)
         return G
@@ -235,7 +231,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         mf = dl[175]
         
         rpm = dl.info["175"]["rpm"] # angular frequency in Hz
-        fs = 51200 # sample frequency
+        fs = 48e3 # sample frequency
         signalt = mf.vib # signal in time domain
         model = sig.ARModel.from_signal(mh.vib[:10000], 75) # AR model
         residt = model.residuals(signalt) # AR residuals in time domain
@@ -249,7 +245,6 @@ class ExperimentSet(gsim.AbstractExperimentSet):
                                  sigshift = -150,
                                  signal = signal,
                                  resid = resid,
-                                 fs = fs,
                                  ordc = 5.4152,
                                  medfiltsize = 100,
                                  sknperseg = 256,)

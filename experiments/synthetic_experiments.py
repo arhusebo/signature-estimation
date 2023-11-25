@@ -2,7 +2,7 @@ import numpy as np
 import scipy.linalg
 
 from faultevent.signal import Signal
-import routines
+import algorithms
 
 import gsim
 from gsim.gfigure import GFigure
@@ -105,31 +105,31 @@ def general_snr_experiment(n_anomalous=0, mc_iterations=10):
             medfilts = np.zeros_like(initial_filters)
 
             for k, initial_filter in enumerate(initial_filters):
-                scores[k], medfilts[k] = routines.score_med(resid,
+                scores[k], medfilts[k] = algorithms.score_med(resid,
                                                             initial_filter,
                                                             ordc,
                                                             ordmin,
                                                             ordmax,)
             # IRFS method. Residuals are filtered using matched filter.
-            residf = routines.medfilt(resid, medfilts[np.argmax(scores)])
-            spos1 = routines.enedetloc(residf, ordmin, ordmax)
+            residf = algorithms.medfilt(resid, medfilts[np.argmax(scores)])
+            spos1 = algorithms.enedetloc(residf, ordmin, ordmax)
             # estimate signature using IRFS
-            sigest_irfs = routines.irfs(resid, spos1, ordmin, ordmax,
-                                        sigsize=sigestlen, sigshift=sigestshift)
+            irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax,
+                                          sigsize=sigestlen, sigshift=sigestshift)
 
             # estimate signature using MED and peak detection
-            medout = routines.medfilt(resid, medfilts[0])
+            medout = algorithms.medfilt(resid, medfilts[0])
             medenv = abs(scipy.signal.hilbert(medout.y))
             medpeaks, _ = scipy.signal.find_peaks(medenv, distance=avg_event_period/2)
             sigest_med = estimate_signat(resid, medpeaks, sigestlen, sigestshift)
             
             # estimate signature using SK and peak detection
-            skout = routines.skfilt(resid)
+            skout = algorithms.skfilt(resid)
             skenv = abs(skout.y)
             skpeaks, _ = scipy.signal.find_peaks(skenv, distance=avg_event_period/2)
             sigest_sk = estimate_signat(resid, skpeaks, sigestlen, sigestshift)
 
-            rmse[0, i, j], _ = estimate_nmse(sigest_irfs, sigfunc, 1000)
+            rmse[0, i, j], _ = estimate_nmse(irfs_result.sigest, sigfunc, 1000)
             rmse[1, i, j], _ = estimate_nmse(sigest_med, sigfunc, 1000)
             rmse[2, i, j], _ = estimate_nmse(sigest_sk, sigfunc, 1000)
 
