@@ -27,7 +27,7 @@ def irfs(data: sig.Signal,
     mu1, kappa1 = evt.fit_vonmises(ordf1, spos1)
     z1 = evt.map_circle(ordf1, spos1)
     crt1 = scipy.stats.vonmises.pdf(z1, kappa1, loc=mu1)
-    idx1 = np.argsort(crt1)
+    idx1 = np.argsort(crt1)[::-1]
     signat1 = utl.estimate_signature(data, spos1[idx1], crt1[idx1],
                                     sigsize, max_error = enedet_max_loc_error,
                                     n0 = sigshift)
@@ -48,7 +48,7 @@ def irfs(data: sig.Signal,
         mu_i, kappa_i = evt.fit_vonmises(ordf_i, spos_i)
         z_i = evt.map_circle(ordf_i, spos_i)
         crt_i = scipy.stats.vonmises.pdf(z_i, kappa_i, loc=mu_i)
-        idx_sorted = np.argsort(crt_i)
+        idx_sorted = np.argsort(crt_i)[::-1]
         sig_i = utl.estimate_signature(data, spos_i[idx_sorted],
                                         crt_i[idx_sorted],
                                         len(det_list[i-1].h))
