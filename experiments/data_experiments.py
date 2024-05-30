@@ -219,8 +219,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
                                  sigshift = -100,
                                  signal = signal,
                                  resid = resid,
-                                 #ordc = 3.56,
-                                 ordc = 5.42,
+                                 ordc = 3.56,
                                  medfiltsize = 100,
                                  sknperseg = 256,)
         return G
