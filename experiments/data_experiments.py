@@ -148,6 +148,9 @@ def benchmark_experiment(sigsize, sigshift, signal, resid, ordc,
     update_scores_gfigure(G, "AR-MED", armed_ndets, armed_mags)
     update_scores_gfigure(G, "SK", sk_ndets, sk_mags)
     update_scores_gfigure(G, "AR-SK", arsk_ndets, arsk_mags)
+    n_events_max = ordc*signal.x[-1]
+    G.add_curve(xaxis=[n_events_max]*2, yaxis=[0, 1],
+                legend="Max events", styles=["k--"])
 
     G_sigest = GFigure(xaxis=resid.x[:len(irfs_result.sigest)],
                        yaxis=irfs_result.sigest,
