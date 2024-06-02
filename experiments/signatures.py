@@ -1,6 +1,7 @@
 import numpy as np
 
 import faultevent.signal as sig
+import faultevent.event as evt
 
 import algorithms
 
@@ -53,7 +54,30 @@ def signature_experiment(sigsize, sigshift, resid, ordc, medfiltsize) -> GFigure
     irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
 
     G = GFigure(yaxis=irfs_result.sigest, xaxis=resid.x[:sigsize])
-    return G
+
+    ords_plot = np.linspace(0, 10, 1000)
+    evspec_plot = evt.event_spectrum(ords_plot, irfs_result.eosp)
+    
+    G_spectrum = GFigure()
+    G_spectrum.next_subplot(
+        xaxis=ords_plot,
+        yaxis=abs(evspec_plot),
+        ylabel="Event spectrum magnitude"
+    )
+    G_spectrum.add_curve(
+        xaxis=[irfs_result.ordf, irfs_result.ordf],
+        yaxis=[0, len(irfs_result.eosp)],
+        legend="Fault order",
+        styles=["--"],
+    )
+    G_spectrum.add_curve(
+        xaxis=[ords_plot[0], ords_plot[-1]],
+        yaxis=[len(irfs_result.eosp), len(irfs_result.eosp)],
+        legend="#Detected events",
+        styles=["--"]
+    )
+
+    return [G, G_spectrum]
 
 
 class ExperimentSet(gsim.AbstractExperimentSet):

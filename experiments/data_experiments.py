@@ -164,7 +164,13 @@ def benchmark_experiment(sigsize, sigshift, signal, resid, ordc,
     G_filt.next_subplot(xaxis=sk_filt.x, yaxis=sk_filt.y, ylabel="SK")
     G_filt.next_subplot(xaxis=arsk_filt.x, yaxis=arsk_filt.y, ylabel="AR-SK")
 
-    return [G, G_sigest, G_filt]
+    G_intermediate = GFigure()
+    G_intermediate.next_subplot(xaxis=signal.x, yaxis=signal.y, ylabel="Signal")
+    G_intermediate.next_subplot(xaxis=resid.x, yaxis=resid.y, ylabel="Residual")
+    G_intermediate.next_subplot(xaxis=residf.x, yaxis=residf.y, ylabel="Pre-filtered")
+    G_intermediate.next_subplot(xaxis=irfs_filt.x, yaxis=irfs_filt.y, ylabel="IRFS-filtered")
+
+    return [G, G_sigest, G_intermediate]
 
 
 class ExperimentSet(gsim.AbstractExperimentSet):
@@ -304,4 +310,22 @@ class ExperimentSet(gsim.AbstractExperimentSet):
             ax[i].set_yticks([])
         plt.tight_layout()
 
+        plt.show()
+    
+
+    def experiment_1005(l_args):
+        """This experiment plots the intermediate IRFS steps of a data
+        experiment. The first argument specifies the experiment number."""
+        import matplotlib
+        import matplotlib.pyplot as plt
+        G = ExperimentSet.load_GFigures(l_args[0])[-1]
+        fig = G.plot()
+        ax = fig.get_axes()
+        
+        for _ax in ax[1:]:
+            ax[0].get_shared_x_axes().join(ax[0], _ax)
+        
+        ax[-1].set_xlabel("Revs")
+        
+        plt.tight_layout()
         plt.show()
