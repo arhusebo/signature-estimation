@@ -1,5 +1,7 @@
 import numpy as np
 import scipy.signal
+import matplotlib.pyplot as plt
+from dataclasses import dataclass
 
 import faultevent.signal as sig
 import faultevent.event as evt
@@ -7,8 +9,10 @@ import faultevent.util as utl
 
 import algorithms
 
-import gsim
-from gsim.gfigure import GFigure
+from simsim import experiment, presentation
+
+
+output_path = "results/data"
 
 
 def detect_and_sort(filt: sig.Signal, ordc, ordmin, ordmax, weightfunc=None, maxevents=10000):
@@ -42,19 +46,36 @@ def detect_and_sort(filt: sig.Signal, ordc, ordmin, ordmax, weightfunc=None, max
         mags[i] = abs(evt.event_spectrum(ordf, spos))
     return ndets, mags
 
-def update_scores_gfigure(G, methodname, ndets, mags):
-    """Updates a GFigure with the score of method 'methodname'."""
-    mag = mags
-    frac = mag/ndets
-    #idx_best = np.argmax(mag/np.sqrt(ndets))
-    G.add_curve(xaxis=ndets,
-                yaxis=frac,
-                legend=methodname,)
+
+@dataclass
+class MethodOutput:
+    method_name: str
+    n_detections: list[int]
+    magnitudes: list[float]
+    signal_filtered: sig.Signal
+
+    def plot_scores(self, ax: plt.Axes):
+        frac = self.magnitudes/self.n_detections
+        ax.plot(self.n_detections, frac)
+        ax.set_label(self.method_name)
 
 
-def benchmark_experiment(sigsize, sigshift, signal, resid, ordc,
+@dataclass
+class Output:
+    data_name: str 
+    signal: sig.Signal
+    resid: sig.Signal
+    method_outputs: list[MethodOutput]
+    ordc: float
+    n_events_max: int
+    irfs_result: algorithms.IRFSResult
+    residf: sig.Signal
+
+
+
+def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
                          medfiltsize, sknperseg,
-                         use_irfs_eosp = False) -> GFigure:
+                         use_irfs_eosp = False):
     """Wrapper function of a general experiment to test all benchmark methods
     on one set of data.
     
@@ -141,191 +162,121 @@ def benchmark_experiment(sigsize, sigshift, signal, resid, ordc,
     arsk_ndets, arsk_mags = detect_and_sort(arsk_filt, ordc, ordmin, ordmax)
     print("AR-SK done.")
 
-    G = GFigure(xlabel="Detected events",
-                ylabel="Fraction of true positives")
-    update_scores_gfigure(G, "IRFS", irfs_ndets, irfs_mags)
-    update_scores_gfigure(G, "MED", med_ndets, med_mags)
-    update_scores_gfigure(G, "AR-MED", armed_ndets, armed_mags)
-    update_scores_gfigure(G, "SK", sk_ndets, sk_mags)
-    update_scores_gfigure(G, "AR-SK", arsk_ndets, arsk_mags)
     n_events_max = ordc*signal.x[-1]
-    G.add_curve(xaxis=[n_events_max]*2, yaxis=[0, 1],
-                legend="Max events", styles=["k--"])
 
-    G_sigest = GFigure(xaxis=resid.x[:len(irfs_result.sigest)],
-                       yaxis=irfs_result.sigest,
-                       xlabel="Revs",
-                       ylabel="Signature estimate")
+    irfs_output = MethodOutput("IRFS", irfs_ndets, irfs_mags, irfs_filt)
+    med_output = MethodOutput("MED", med_ndets, med_mags, med_filt)
+    armed_output = MethodOutput("AR-MED", armed_ndets, armed_mags, armed_filt)
+    sk_output = MethodOutput("SK", sk_ndets, sk_mags, sk_filt)
+    arsk_output = MethodOutput("AR-SK", arsk_ndets, arsk_mags, arsk_filt)
+
+    method_outputs = [irfs_output, med_output, armed_output, sk_output, arsk_output]
+
+    results = Output(
+        data_name, signal, resid, method_outputs, ordc, n_events_max, irfs_result, residf)
+
+    return results
+
+
+@experiment(output_path)
+def ex_uia():
+    from data.uia import UiADataLoader
+    from data import uia_path
+    dl = UiADataLoader(uia_path)
+    mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
+    mf = dl["y2016-m09-d24/00-40-22 1000rpm - 51200Hz - 100LOR.h5"]
     
-    G_filt = GFigure()
-    G_filt.next_subplot(xaxis=irfs_filt.x, yaxis=irfs_filt.y, ylabel="IRFS")
-    G_filt.next_subplot(xaxis=med_filt.x, yaxis=med_filt.y, ylabel="MED")
-    G_filt.next_subplot(xaxis=armed_filt.x, yaxis=armed_filt.y, ylabel="AR-MED")
-    G_filt.next_subplot(xaxis=sk_filt.x, yaxis=sk_filt.y, ylabel="SK")
-    G_filt.next_subplot(xaxis=arsk_filt.x, yaxis=arsk_filt.y, ylabel="AR-SK")
+    rpm = 1000 # angular speed in rpm
+    fs = 51200 # sample frequency
+    signalt = mf.vib # signal in time domain
+    model = sig.ARModel.from_signal(mh.vib[:10000], 117) # AR model
+    residt = model.residuals(signalt) # AR residuals in time domain
 
-    G_intermediate = GFigure()
-    G_intermediate.next_subplot(xaxis=signal.x, yaxis=signal.y, ylabel="Signal")
-    G_intermediate.next_subplot(xaxis=resid.x, yaxis=resid.y, ylabel="Residual")
-    G_intermediate.next_subplot(xaxis=residf.x, yaxis=residf.y, ylabel="Pre-filtered")
-    G_intermediate.next_subplot(xaxis=irfs_filt.x, yaxis=irfs_filt.y, ylabel="IRFS-filtered")
+    # Angular speed of these measurements are approximately constant,
+    # no resampling is applied.
+    signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
+    resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
 
-    return [G, G_sigest, G_intermediate]
+    return benchmark_experiment("UIA",
+                                sigsize = 400,
+                                sigshift = -150,
+                                signal = signal,
+                                resid = resid,
+                                ordc = 6.7087166, # contact angle corrected
+                                medfiltsize = 100,
+                                sknperseg = 1000,)
 
 
-class ExperimentSet(gsim.AbstractExperimentSet):
-
-    def experiment_1001(l_args):
-
-        from data.uia import UiADataLoader
-        from data import uia_path
-        dl = UiADataLoader(uia_path)
-        mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
-        mf = dl["y2016-m09-d24/00-40-22 1000rpm - 51200Hz - 100LOR.h5"]
-        
-        rpm = 1000 # angular speed in rpm
-        fs = 51200 # sample frequency
-        signalt = mf.vib # signal in time domain
-        model = sig.ARModel.from_signal(mh.vib[:10000], 117) # AR model
-        residt = model.residuals(signalt) # AR residuals in time domain
-
-        # Angular speed of these measurements are approximately constant,
-        # no resampling is applied.
-        signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
-        resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
-
-        G = benchmark_experiment(sigsize = 400,
-                                 sigshift = -150,
-                                 signal = signal,
-                                 resid = resid,
-                                 ordc = 6.7087166, # contact angle corrected
-                                 medfiltsize = 100,
-                                 sknperseg = 1000,)
-        return G
+@experiment(output_path)
+def ex_unsw():
+    from data.unsw import UNSWDataLoader
+    from data import unsw_path
+    dl = UNSWDataLoader(unsw_path)
+    mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
+    mf = dl["Test 1/6Hz/vib_000356575_06.mat"]
     
-    def experiment_1002(l_args):
-        from data.unsw import UNSWDataLoader
-        from data import unsw_path
-        dl = UNSWDataLoader(unsw_path)
-        mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
-        mf = dl["Test 1/6Hz/vib_000356575_06.mat"]
-        
-        angfhz = 6 # angular frequency in Hz
-        fs = 51200 # sample frequency
-        signalt = mf.vib # signal in time domain
-        model = sig.ARModel.from_signal(mh.vib[:10000], 41) # AR model
-        residt = model.residuals(signalt) # AR residuals in time domain
+    angfhz = 6 # angular frequency in Hz
+    fs = 51200 # sample frequency
+    signalt = mf.vib # signal in time domain
+    model = sig.ARModel.from_signal(mh.vib[:10000], 41) # AR model
+    residt = model.residuals(signalt) # AR residuals in time domain
 
-        # Angular speed of these measurements are approximately constant,
-        # no resampling is applied.
-        signal = sig.Signal.from_uniform_samples(signalt.y, angfhz/fs)
-        resid = sig.Signal.from_uniform_samples(residt.y, angfhz/fs)
+    # Angular speed of these measurements are approximately constant,
+    # no resampling is applied.
+    signal = sig.Signal.from_uniform_samples(signalt.y, angfhz/fs)
+    resid = sig.Signal.from_uniform_samples(residt.y, angfhz/fs)
 
-        G = benchmark_experiment(sigsize = 200,
-                                 sigshift = -100,
-                                 signal = signal,
-                                 resid = resid,
-                                 ordc = 3.56,
-                                 medfiltsize = 100,
-                                 sknperseg = 256,)
-        return G
+    return benchmark_experiment("UNSW",
+                                sigsize = 200,
+                                sigshift = -100,
+                                signal = signal,
+                                resid = resid,
+                                ordc = 3.56,
+                                medfiltsize = 100,
+                                sknperseg = 256,)
 
-    def experiment_1003(l_args):
 
-        from data.cwru import CWRUDataLoader
-        from data import cwru_path
-        dl = CWRUDataLoader(cwru_path)
-        mh = dl[100]
-        mf = dl[175]
-        
-        rpm = dl.info["175"]["rpm"] # angular frequency in Hz
-        fs = 48e3 # sample frequency
-        signalt = mf.vib # signal in time domain
-        model = sig.ARModel.from_signal(mh.vib[:10000], 75) # AR model
-        residt = model.residuals(signalt) # AR residuals in time domain
-
-        # Angular speed of these measurements are approximately constant,
-        # no resampling is applied.
-        signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
-        resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
-
-        G = benchmark_experiment(sigsize = 400,
-                                 sigshift = -150,
-                                 signal = signal,
-                                 resid = resid,
-                                 ordc = 5.4152,
-                                 medfiltsize = 100,
-                                 sknperseg = 256,)
-        return G
+@experiment(output_path)
+def ex_cwru():
+    from data.cwru import CWRUDataLoader
+    from data import cwru_path
+    dl = CWRUDataLoader(cwru_path)
+    mh = dl[100]
+    mf = dl[175]
     
-    def experiment_1004(l_args):
-        """This experiment combines the results of all experiments into
-        a single GFigure"""
-        import matplotlib
-        import matplotlib.pyplot as plt
+    rpm = dl.info["175"]["rpm"] # angular frequency in Hz
+    fs = 48e3 # sample frequency
+    signalt = mf.vib # signal in time domain
+    model = sig.ARModel.from_signal(mh.vib[:10000], 75) # AR model
+    residt = model.residuals(signalt) # AR residuals in time domain
 
-        l_G_uia = ExperimentSet.load_GFigures(1001)
-        l_G_unsw = ExperimentSet.load_GFigures(1002)
-        l_G_cwru = ExperimentSet.load_GFigures(1003)
-        G = GFigure(figsize=(3.5, 4.0))
-        G.l_subplots = l_G_uia[0].l_subplots +\
-                       l_G_unsw[0].l_subplots +\
-                       l_G_cwru[0].l_subplots
-        
-        G_sigest = GFigure(num_subplot_columns=3, figsize=(3.5, 1.0))
-        G_sigest.l_subplots = l_G_uia[1].l_subplots +\
-                              l_G_unsw[1].l_subplots +\
-                              l_G_cwru[1].l_subplots
-        
-        # edit loaded GFigure
-        datalabels = ["UiA", "UNSW", "CWRU"]
-        for i, subplt in enumerate(G.l_subplots):
-            #subplt.l_curves[0], subplt.l_curves[-1] = subplt.l_curves[-1], subplt.l_curves[0]
-            subplt.ylabel = f"True positive rate\n({datalabels[i]})"
-            subplt.xlabel = ""
-        G.l_subplots[-1].xlabel = "Detections"
+    # Angular speed of these measurements are approximately constant,
+    # no resampling is applied.
+    signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
+    resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
 
-        for i, subplt in enumerate(G_sigest.l_subplots):
-            subplt.ylabel = ""
-            subplt.xlabel = "Revs"
-            for curve in subplt.l_curves:
-                curve.style = "k-"
-            
-        G_sigest.l_subplots[0].ylabel = "Signature\nestimate"
+    return benchmark_experiment("CWRU",
+                                sigsize = 400,
+                                sigshift = -150,
+                                signal = signal,
+                                resid = resid,
+                                ordc = 5.4152,
+                                medfiltsize = 100,
+                                sknperseg = 256,)
 
-        # draw GFigure and customise plotting
-        matplotlib.rcParams.update({"font.size": 8})
-        fig = G.plot()
-        ax = fig.get_axes()
-        ax[0].legend(ncol=3, bbox_to_anchor=(0.5, 1.6), loc="upper center")
-        ax[1].get_legend().remove()
-        ax[2].get_legend().remove()
-        plt.tight_layout()
-        
-        with matplotlib.rc_context({"lines.linewidth" : .5}):
-            fig_sigest = G_sigest.plot()
-        ax = fig_sigest.get_axes()
-        for i in range(len(ax)):
-            ax[i].grid(visible=False, which="both", axis="both")
-            ax[i].set_yticks([])
-        plt.tight_layout()
 
-        plt.show()
-    
+def _present_benchmark_general(ax: plt.Axes, results: Output):
+    for method_output in results.method_outputs:
+        method_output.plot_scores(ax)
+    ax.legend()
+    ax.axvline(results.n_events_max, label="Max events", ls="k--")
 
-    def experiment_1005(l_args):
-        """This experiment plots the intermediate IRFS steps of a data
-        experiment. The first argument specifies the experiment number."""
-        import matplotlib
-        import matplotlib.pyplot as plt
-        G = ExperimentSet.load_GFigures(l_args[0])[-1]
-        fig = G.plot()
-        ax = fig.get_axes()
-        
-        for _ax in ax[1:]:
-            ax[0].get_shared_x_axes().join(ax[0], _ax)
-        
-        ax[-1].set_xlabel("Revs")
-        
-        plt.tight_layout()
-        plt.show()
+
+@presentation(output_path, ["ex_uia", "ex_unsw", "ex_cwru"])
+def present_all_benchmarks(all_results: list[Output]):
+    fig, ax = plt.subplots(nrows=len(all_results))
+    for i, results in enumerate(all_results):
+        _present_benchmark_general(ax[i], results)
+        ax[i].set_ylabel(f"True positive rate\n({results.data_name})")
+    ax[-1].set_xlabel("Detections")
+    plt.show()
