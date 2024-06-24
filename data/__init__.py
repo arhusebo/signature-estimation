@@ -3,4 +3,4 @@
 
 #uia_path = "path/do/dataset"
 #unsw_path = "path/do/dataset"
-#cwru_path = "path/do/dataset"
+cwru_path = r"C:\Users\Arild\lagerdata\case_dataset"
