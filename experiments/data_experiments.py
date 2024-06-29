@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.signal
+import scipy.stats
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
 
@@ -267,16 +268,78 @@ def ex_cwru():
 
 def _present_benchmark_general(ax: plt.Axes, results: Output):
     for method_output in results.method_outputs:
-        method_output.plot_scores(ax)
-    ax.legend()
-    ax.axvline(results.n_events_max, label="Max events", ls="k--")
+        frac = method_output.magnitudes/method_output.n_detections
+        ax.plot(method_output.n_detections, frac, label=method_output.method_name)
+    ax.axvline(results.n_events_max, label="Max events", ls="--", c="k")
 
 
 @presentation(output_path, ["ex_uia", "ex_unsw", "ex_cwru"])
-def present_all_benchmarks(all_results: list[Output]):
+def present_benchmarks(all_results: list[Output]):
     fig, ax = plt.subplots(nrows=len(all_results))
     for i, results in enumerate(all_results):
         _present_benchmark_general(ax[i], results)
         ax[i].set_ylabel(f"True positive rate\n({results.data_name})")
+        ax[i].grid(which="both")
     ax[-1].set_xlabel("Detections")
+    ax[0].legend(ncol=3, bbox_to_anchor=(0.5, 1.6), loc="upper center")
+    plt.show()
+
+
+@presentation(output_path, ["ex_uia"])
+def present_intermediate_uia(results: Output):
+    fig, ax = plt.subplots(4, 1, sharex=True)
+    ax[0].plot(results.signal.x, results.signal.y)
+    ax[0].set_ylabel("Signal")
+    ax[1].plot(results.resid.x, results.resid.y)
+    ax[1].set_ylabel("Residual")
+    ax[2].plot(results.residf.x, results.residf.y)
+    ax[2].set_ylabel("Pre-filtered")
+    ax[3].plot(results.method_outputs[0].signal_filtered.x, results.method_outputs[0].signal_filtered.y)
+    ax[3].set_ylabel("IRFS-fitlered")
+    ax[3].set_xlabel("Revs")
+    ax[3].set_xlim(1, 12)
+    plt.show()
+
+
+@presentation(output_path, ["ex_uia", "ex_unsw", "ex_cwru"])
+def present_event_spectrum(all_results: list[Output]):
+    ord = np.arange(0, 10, 0.01)
+    fig, ax = plt.subplots(nrows=len(all_results))
+    for i, results in enumerate(all_results):
+        spos = results.irfs_result.eosp
+        ordf = results.irfs_result.ordf
+        evsp = evt.event_spectrum(ord, spos)
+        ax[i].plot(ord, abs(evsp)) 
+        ax[i].axvline(ordf, ls="--", c="k", label="Fault order")
+        ax[i].axhline(len(spos), ls="-", c="gray", label="#Detected events")
+        ax[i].set_xlim(ord[0], ord[-1])
+        ax[i].set_ylabel(f"Event spectrum\nmag. ({results.data_name})")
+        ax[i].set_xlabel("Order [X]")
+    ax[0].legend(ncol=2, bbox_to_anchor=(0.5, 1.4), loc="upper center")
+    plt.show()
+
+
+@presentation(output_path, ["ex_uia", "ex_unsw", "ex_cwru"])
+def present_periodic_transform(all_results: list[Output]):
+    fig, ax = plt.subplots(nrows=len(all_results), sharex=True)
+    zpdf = np.linspace(0, 2*np.pi, 1000)
+    for i, results in enumerate(all_results):
+        ordf = results.irfs_result.ordf
+        spos = results.irfs_result.eosp
+        mu = results.irfs_result.mu
+        kappa = results.irfs_result.kappa
+        z = evt.map_circle(ordf, spos)
+        n = evt.period_number(ordf, spos)
+        pdf = scipy.stats.vonmises.pdf(zpdf, kappa, loc=mu)
+        ax_pdf = ax[i].twinx()
+        ax[i].scatter(z, n, label="Transformed EOSPs", c="k")
+        ax_pdf.plot(zpdf, pdf, label="Certainty metric")
+        ax_pdf.set_ylabel("Certainty metric")
+        ax[i].set_ylabel("#Period")
+        ax[i].set_xticks([0, np.pi/2, np.pi, 3/2*np.pi, 2*np.pi],
+                         [r"$0$", r"$\frac{\pi}{2}$", r"$\pi$", r"$\frac{3\pi}{2}$", r"$2\pi$"])
+        ax[i].set_xlim(0, 2*np.pi)
+    
+    ax[-1].set_xlabel("Offset")
+    ax[0].legend(bbox_to_anchor=(0.5, 1.4), loc="upper center")
     plt.show()
