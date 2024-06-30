@@ -28,9 +28,12 @@ def irfs(data: sig.Signal,
     z1 = evt.map_circle(ordf1, spos1)
     crt1 = scipy.stats.vonmises.pdf(z1, kappa1, loc=mu1)
     idx1 = np.argsort(crt1)[::-1]
-    signat1 = utl.estimate_signature(data, spos1[idx1], crt1[idx1],
-                                    sigsize, max_error = enedet_max_loc_error,
-                                    n0 = sigshift)
+    signat1 = utl.estimate_signature(data,
+                                     sigsize,
+                                     x=spos1[idx1],
+                                     weights=crt1[idx1],
+                                     max_error = enedet_max_loc_error,
+                                     n0 = sigshift)
 
     # ith iteration
     det1 = sig.MatchedFilterEnvelopeDetector(signat1)
@@ -49,9 +52,10 @@ def irfs(data: sig.Signal,
         z_i = evt.map_circle(ordf_i, spos_i)
         crt_i = scipy.stats.vonmises.pdf(z_i, kappa_i, loc=mu_i)
         idx_sorted = np.argsort(crt_i)[::-1]
-        sig_i = utl.estimate_signature(data, spos_i[idx_sorted],
-                                        crt_i[idx_sorted],
-                                        len(det_list[i-1].h))
+        sig_i = utl.estimate_signature(data,
+                                       len(det_list[i-1].h),
+                                       x=spos_i[idx_sorted],
+                                       weights=crt_i[idx_sorted])
         det_i = sig.MatchedFilterEnvelopeDetector(sig_i)
         det_list.append(det_i)
     result = IRFSResult(sig_i, spos_i, mag_i, crt_i, ordf_i, mu_i, kappa_i)
