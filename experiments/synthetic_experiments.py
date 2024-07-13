@@ -158,8 +158,6 @@ def general_snr_experiment(n_anomalous=0, mc_iterations=10):
     with Pool() as p:
         rmse = p.starmap(_snr_experiment, list_args)
     
-    rmse = np.reshape(rmse, (3, len(snr_to_eval), -1))
-
     return snr_to_eval, rmse
 
 
@@ -178,6 +176,8 @@ def present_snr(results: list[npt.ArrayLike, tuple]):
     fig, ax = plt.subplots(2, 1, sharex=True)
     for i, result in enumerate(results):
         snr_to_eval, rmse = result
-        ax[i].plot(snr_to_eval, np.mean(rmse, -1).T)
+        rmse = np.reshape(rmse, (len(snr_to_eval), -1, 3))
+        ax[i].plot(snr_to_eval, np.mean(rmse, 1))
+        ax[i].set_xscale("log")
     
     plt.show()
