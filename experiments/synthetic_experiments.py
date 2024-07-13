@@ -174,10 +174,21 @@ def mc_snr_signature_anomalous():
 @presentation(output_path, ["mc_snr_signature", "mc_snr_signature_anomalous"])
 def present_snr(results: list[npt.ArrayLike, tuple]):
     fig, ax = plt.subplots(2, 1, sharex=True)
+    ylabels = ["A", "B"]
+    legend = ["IRFS", "MED", "SK"]
+    markers = ["o", "^", "d"]
     for i, result in enumerate(results):
         snr_to_eval, rmse = result
         rmse = np.reshape(rmse, (len(snr_to_eval), -1, 3))
-        ax[i].plot(snr_to_eval, np.mean(rmse, 1))
-        ax[i].set_xscale("log")
+        snr = 10*np.log10(snr_to_eval)
+        ax[i].plot(snr, np.mean(rmse, 1), marker=markers[i])
+        ax[i].set_ylabel(f"NMSE ({ylabels[i]})")
+        ax[i].grid()
+        ax[i].set_yticks([0.0, 0.5, 1.0])
+        ax[i].set_xticks(range(-20, 1, 5))
+    
+    ax[-1].set_xlabel("SNR (dB)")
+    ax[0].legend(legend, ncol=len(legend), loc="upper center",
+                 bbox_to_anchor=(0.5, 1.3))
     
     plt.show()
