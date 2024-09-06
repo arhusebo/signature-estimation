@@ -25,7 +25,7 @@ class CWRUDataLoader(DataLoader):
             self.info = json.load(f)
     
     def signal_info(self, id) -> DataInfo | None:
-        return next((d for d in self.info["data"] if d["id"] == id))
+        return next((d for d in self.info["data"] if d["id"] == id), None)
 
     def __getitem__(self, id) -> Measurement:
         info = self.signal_info(id)

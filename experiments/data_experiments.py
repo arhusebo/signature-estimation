@@ -94,29 +94,14 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
 
     ordmin = ordc-.5
     ordmax = ordc+.5
+    faults = {"":(ordmin, ordmax)}
 
-    # Residuals are pre-filtered using MED.
-    initial_filters = np.zeros((2,medfiltsize), dtype=float)
-    # Impulse condition:
-    initial_filters[0, medfiltsize//2] = 1
-    initial_filters[0, medfiltsize//2+1] = -1
-    # Step condition:
-    initial_filters[1, :medfiltsize//2] = 1
-    initial_filters[1, medfiltsize//2:] = -1
-
-    # Find best pre-filtering MED filter for initial detection
-    scores = np.zeros((len(initial_filters),), dtype=float)
-    medfilts = np.zeros_like(initial_filters)
-    for i, initial_filter in enumerate(initial_filters):
-        scores[i], medfilts[i] = algorithms.score_med(resid,
-                                                    initial_filter,
-                                                    ordc,
-                                                    ordmin,
-                                                    ordmax,)
-    residf = algorithms.medfilt(resid, medfilts[np.argmax(scores)])
+    score_med_results = algorithms.score_med(resid, medfiltsize, faults)
+    residf = score_med_results["filtered"]
 
     # IRFS method.
-    spos1 = algorithms.enedetloc(residf, ordmin, ordmax) # First iteration
+    spos1 = algorithms.enedetloc(residf,
+                                 threshold=score_med_results["threshold"])
     irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
 
     if use_irfs_eosp:
@@ -142,14 +127,12 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
     print("IRFS done.")
 
     # MED method. Signal is filtered using filter obtained by MED.
-    medfiltest = algorithms.medest(signal.y, initial_filters[0])
-    med_filt = algorithms.medfilt(signal, medfiltest)
+    med_filt = algorithms.med_filter(signal, medfiltsize, "impulse")
     med_ndets, med_mags = detect_and_sort(med_filt, ordc, ordmin, ordmax)
     print("MED done.")
 
     # AR-MED method. Residuals are filtered using filter obtained by AR-MED.
-    armedfiltest = algorithms.medest(resid.y, initial_filters[0])
-    armed_filt = algorithms.medfilt(resid, armedfiltest)
+    armed_filt = algorithms.med_filter(resid, medfiltsize, "impulse")
     armed_ndets, armed_mags = detect_and_sort(armed_filt, ordc, ordmin, ordmax)
     print("AR-MED done.")
 
@@ -242,10 +225,10 @@ def ex_cwru():
     from data.cwru import CWRUDataLoader
     from data import cwru_path
     dl = CWRUDataLoader(cwru_path)
-    mh = dl[100]
-    mf = dl[175]
+    mh = dl["100"]
+    mf = dl["175"]
     
-    rpm = dl.info["175"]["rpm"] # angular frequency in Hz
+    rpm = dl.signal_info("175")["rpm"] # angular frequency in Hz
     fs = 48e3 # sample frequency
     signalt = mf.vib # signal in time domain
     model = sig.ARModel.from_signal(mh.vib[:10000], 75) # AR model
