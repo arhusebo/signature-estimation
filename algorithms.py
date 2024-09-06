@@ -157,7 +157,7 @@ def skfilt(signal: sig.Signal, nperseg: int = 1000):
 
 
 def enedetloc(data: sig.Signal,
-              search_intervals: list[tuple[float, float]],
+              search_intervals: list[tuple[float, float]] | None = None,
               enedetsize: int = 50,
               hysteresis: float = .8,
               threshold: float | None = None,
@@ -165,12 +165,14 @@ def enedetloc(data: sig.Signal,
     """Detect and return locations of events using an energy detector"""
     det = sig.EnergyDetector(enedetsize)
     stat = det.statistic(data)
-    if threshold is None:
+    if not search_intervals is None:
         threshold, _ = utl.best_threshold(stat,
                                           search_intervals,
                                           hysteresis=hysteresis,
                                           dettype="ed",
                                           n=threshold_trials)
+    elif threshold is None:
+        raise ValueError("either search_intervals or threshold must be specified")
     cmp = sig.Comparison.from_comparator(stat,
                                          threshold,
                                          hysteresis*threshold)
