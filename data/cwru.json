@@ -1,0 +1,285 @@
+{
+  "fs": 48.0e3,
+  "data": [
+    {
+      "name": "Normal_0",
+      "id": "097",
+      "filename": "97.mat",
+      "rpm": 1797,
+      "hp": 0
+    },
+    {
+      "name": "Normal_1",
+      "id": "098",
+      "filename": "98.mat",
+      "rpm": 1772,
+      "hp": 1
+    },
+    {
+      "name": "Normal_2",
+      "id": "099",
+      "filename": "99.mat",
+      "rpm": 1750,
+      "hp": 2
+    },
+    {
+      "name": "Normal_3",
+      "id": "100",
+      "filename": "100.mat",
+      "rpm": 1730,
+      "hp": 3
+    },
+    {
+      "name": "OR007@6_0",
+      "id": "135",
+      "filename": "135.mat",
+      "rpm": 1797,
+      "hp": 0
+    },
+    {
+      "name": "OR007@6_1",
+      "id": "136",
+      "filename": "136.mat",
+      "rpm": 1772,
+      "hp": 1
+    },
+    {
+      "name": "OR007@6_2",
+      "id": "137",
+      "filename": "137.mat",
+      "rpm": 1750,
+      "hp": 2
+    },
+    {
+      "name": "OR007@6_3",
+      "id": "138",
+      "filename": "138.mat",
+      "rpm": 1730,
+      "hp": 3
+    },
+    {
+      "name": "OR014@6_0",
+      "id": "201",
+      "filename": "201.mat",
+      "rpm": 1797,
+      "hp": 0
+    },
+    {
+      "name": "OR014@6_1",
+      "id": "202",
+      "filename": "202.mat",
+      "rpm": 1772,
+      "hp": 1
+    },
+    {
+      "name": "OR014@6_2",
+      "id": "203",
+      "filename": "203.mat",
+      "rpm": 1750,
+      "hp": 2
+    },
+    {
+      "name": "OR014@6_3",
+      "id": "204",
+      "filename": "204.mat",
+      "rpm": 1730,
+      "hp": 3
+    },
+    {
+      "name": "OR021@6_0",
+      "id": "238",
+      "filename": "238.mat",
+      "rpm": 1797,
+      "hp": 0
+    },
+    {
+      "name": "OR021@6_1",
+      "id": "239",
+      "filename": "239.mat",
+      "rpm": 1772,
+      "hp": 1
+    },
+    {
+      "name": "OR021@6_2",
+      "id": "240",
+      "filename": "240.mat",
+      "rpm": 1750,
+      "hp": 2
+    },
+    {
+      "name": "OR021@6_3",
+      "id": "241",
+      "filename": "241.mat",
+      "rpm": 1730,
+      "hp": 3
+    },
+    {
+      "name": "B007_0",
+      "id": "122",
+      "filename": "122.mat",
+      "rpm": 1797,
+      "hp": 0
+    },
+    {
+      "name": "B007_1",
+      "id": "123",
+      "filename": "123.mat",
+      "rpm": 1772,
+      "hp": 1
+    },
+    {
+      "name": "B007_2",
+      "id": "124",
+      "filename": "124.mat",
+      "rpm": 1750,
+      "hp": 2
+    },
+    {
+      "name": "B007_3",
+      "id": "125",
+      "filename": "125.mat",
+      "rpm": 1730,
+      "hp": 3
+    },
+    {
+      "name": "B014_0",
+      "id": "189",
+      "filename": "189.mat",
+      "rpm": 1797,
+      "hp": 0
+    },
+    {
+      "name": "B014_1",
+      "id": "190",
+      "filename": "190.mat",
+      "rpm": 1772,
+      "hp": 1
+    },
+    {
+      "name": "B014_2",
+      "id": "191",
+      "filename": "191.mat",
+      "rpm": 1750,
+      "hp": 2
+    },
+    {
+      "name": "B014_3",
+      "id": "192",
+      "filename": "192.mat",
+      "rpm": 1730,
+      "hp": 3
+    },
+    {
+      "name": "B021_0",
+      "id": "226",
+      "filename": "226.mat",
+      "rpm": 1797,
+      "hp": 0
+    },
+    {
+      "name": "B021_1",
+      "id": "227",
+      "filename": "227.mat",
+      "rpm": 1772,
+      "hp": 1
+    },
+    {
+      "name": "B021_2",
+      "id": "228",
+      "filename": "228.mat",
+      "rpm": 1750,
+      "hp": 2
+    },
+    {
+      "name": "B021_3",
+      "id": "229",
+      "filename": "229.mat",
+      "rpm": 1730,
+      "hp": 3
+    },
+    {
+      "name": "IR007_0",
+      "id": "109",
+      "filename": "109.mat",
+      "rpm": 1797,
+      "hp": 0
+    },
+    {
+      "name": "IR007_1",
+      "id": "110",
+      "filename": "110.mat",
+      "rpm": 1772,
+      "hp": 1
+    },
+    {
+      "name": "IR007_2",
+      "id": "111",
+      "filename": "111.mat",
+      "rpm": 1750,
+      "hp": 2
+    },
+    {
+      "name": "IR007_3",
+      "id": "112",
+      "filename": "112.mat",
+      "rpm": 1730,
+      "hp": 3
+    },
+    {
+      "name": "IR014_0",
+      "id": "173",
+      "filename": "174.mat",
+      "rpm": 1797,
+      "hp": 0
+    },
+    {
+      "name": "IR014_1",
+      "id": "175",
+      "filename": "175.mat",
+      "rpm": 1772,
+      "hp": 1
+    },
+    {
+      "name": "IR014_2",
+      "id": "176",
+      "filename": "176.mat",
+      "rpm": 1750,
+      "hp": 2
+    },
+    {
+      "name": "IR014_3",
+      "id": "177",
+      "filename": "177.mat",
+      "rpm": 1730,
+      "hp": 3
+    },
+    {
+      "name": "IR021_0",
+      "id": "213",
+      "filename": "213.mat",
+      "rpm": 1797,
+      "hp": 0
+    },
+    {
+      "name": "IR021_1",
+      "id": "214",
+      "filename": "214.mat",
+      "rpm": 1772,
+      "hp": 1
+    },
+    {
+      "name": "IR021_2",
+      "id": "215",
+      "filename": "215.mat",
+      "rpm": 1750,
+      "hp": 2
+    },
+    {
+      "name": "IR021_3",
+      "id": "217",
+      "filename": "217.mat",
+      "rpm": 1730,
+      "hp": 3
+    }
+  ]
+}

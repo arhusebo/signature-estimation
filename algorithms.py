@@ -1,4 +1,5 @@
 from collections import namedtuple
+from typing import Literal
 import numpy as np
 import numpy.typing as npt
 import scipy.signal
@@ -39,7 +40,7 @@ def irfs(data: sig.Signal,
     det1 = sig.MatchedFilterEnvelopeDetector(signat1)
     stat1 = det1.statistic(data)
     norm1 = np.linalg.norm(signat1)
-    thr1 = utl.best_threshold(stat1, ordmin, ordmax, hys=hys,
+    thr1, _ = utl.best_threshold(stat1, [(ordmin, ordmax)], hysteresis=hys,
                               n=threshold_trials)/norm1
     det_list = [det1]
     for i in range(1, n_iter-1):
@@ -60,6 +61,51 @@ def irfs(data: sig.Signal,
         det_list.append(det_i)
     result = IRFSResult(sig_i, spos_i, mag_i, crt_i, ordf_i, mu_i, kappa_i)
     return result
+
+
+def diagnose_fault(eosp: npt.ArrayLike,
+                   faults: dict,
+                   fault_threshold: float = 0.0,
+                   ) -> tuple[float, float] | None:
+    """Diagnose the fault type given event shaft positions and a list
+    of dictionaries containing fault characteristics. Fault
+    dictionaries must be on the form
+    {
+        "OR" : (4.9, 5.1),
+        "IR" : (3.7, 3.8)
+    }
+    """
+
+    best_score = 0.0
+    results = None
+    for key, interval in faults.items():
+        _, magnitude = evt.find_order(eosp, *interval, density=1e3)
+        score = magnitude/np.sqrt(len(eosp)) if len(eosp) else 0.0
+        if score > best_score >= fault_threshold:
+            results = key
+            best_score = score
+    return results
+
+
+def med_initial(filter_length: int, shape: Literal["step", "impulse"]):
+    initial_filter = np.zeros((filter_length,), dtype=float)
+    if shape == "step":
+        initial_filter[:filter_length//2] = 1
+        initial_filter[filter_length//2:] = -1
+    elif shape == "impulse":
+        initial_filter[filter_length//2] = 1
+        initial_filter[filter_length//2+1] = -1
+    return initial_filter
+
+
+def med_filter(signal: sig.Signal,
+               filter_length: int,
+               initial_type: Literal["step", "impulse"]) -> sig.Signal:
+    """Applies an MED-filter to the signal"""
+
+    initial_filter = med_initial(filter_length, initial_type)
+    med_filter = medest(signal.y, initial_filter)
+    return medfilt(signal, med_filter)
 
 
 def medest(x: npt.ArrayLike, f0: npt.ArrayLike, its: int=10) -> np.ndarray:
@@ -111,17 +157,23 @@ def skfilt(signal: sig.Signal, nperseg: int = 1000):
 
 
 def enedetloc(data: sig.Signal,
-            ordmin: float,
-            ordmax: float,
-            enedetsize: int = 50,
-            hys: float = .8,
-            threshold_trials: int = 10) -> np.ndarray:
+              search_intervals: list[tuple[float, float]],
+              enedetsize: int = 50,
+              hysteresis: float = .8,
+              threshold: float | None = None,
+              threshold_trials: int = 10) -> np.ndarray:
     """Detect and return locations of events using an energy detector"""
     det = sig.EnergyDetector(enedetsize)
     stat = det.statistic(data)
-    thr = utl.best_threshold(stat, ordmin, ordmax, hys=hys, dettype="ed",
-                              n=threshold_trials)
-    cmp = sig.Comparison.from_comparator(stat, thr, hys*thr)
+    if threshold is None:
+        threshold, _ = utl.best_threshold(stat,
+                                          search_intervals,
+                                          hysteresis=hysteresis,
+                                          dettype="ed",
+                                          n=threshold_trials)
+    cmp = sig.Comparison.from_comparator(stat,
+                                         threshold,
+                                         hysteresis*threshold)
     spos = np.asarray(sig.energy_detector_location_estimates(cmp))
     return spos
 
@@ -136,7 +188,7 @@ def peak_detection(data: sig.Signal, ordc: float):
     return spos
 
 
-def score_med(data: sig.Signal,
+def score_med_old(data: sig.Signal,
               initial_filter: npt.ArrayLike,
               ordc: float,
               ordmin: float,
@@ -155,3 +207,24 @@ def score_med(data: sig.Signal,
     _, mag = utl.find_order(spos, ordmin, ordmax)
     score = mag/np.sqrt(len(spos))
     return score, medfiltest
+
+
+def score_med(signal: sig.Signal,
+              filter_length: int, faults: dict) -> Literal["impulse", "step"]:
+    """Find the best MED initial conditions given possible faults"""
+    # Find best pre-filtering MED filter for initial detection
+    initial_shapes = ["impulse", "step"]
+    search_intervals = faults.values()
+    best_score = 0
+    for initial_shape in initial_shapes:
+        filtered = med_filter(signal, filter_length, initial_shape)
+        threshold, score = utl.best_threshold(filtered, search_intervals, hysteresis=0.2, dettype="ed", order_search_density=100)
+        if score <= best_score: continue
+        results = {
+            "score": score,
+            "threshold": threshold,
+            "filtered": filtered,
+            "initial_shape": initial_shape,
+        }
+    
+    return results
