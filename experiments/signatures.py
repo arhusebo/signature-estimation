@@ -34,29 +34,15 @@ def signature_experiment(sigsize, sigshift, resid, ordc, medfiltsize):
 
     ordmin = ordc-.5
     ordmax = ordc+.5
+    faults = {"":(ordmin, ordmax)}
 
-    # Residuals are pre-filtered using .
-    initial_filters = np.zeros((2,medfiltsize), dtype=float)
-    # impulse
-    initial_filters[0, medfiltsize//2] = 1
-    initial_filters[0, medfiltsize//2+1] = -1
-    # step
-    initial_filters[1, :medfiltsize//2] = 1
-    initial_filters[1, medfiltsize//2:] = -1
-
-    scores = np.zeros((len(initial_filters),), dtype=float)
-    medfilts = np.zeros_like(initial_filters)
-
-    for i, initial_filter in enumerate(initial_filters):
-        scores[i], medfilts[i] = algorithms.score_med(resid,
-                                                    initial_filter,
-                                                    ordc,
-                                                    ordmin,
-                                                    ordmax,)
-    residf = algorithms.medfilt(resid, medfilts[np.argmax(scores)])
+    score_med_results = algorithms.score_med(resid, medfiltsize, faults)
+    residf = score_med_results["filtered"]
 
     # IRFS method.
-    spos1 = algorithms.enedetloc(residf, ordmin, ordmax)
+    spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
+    #spos1 = algorithms.enedetloc(residf,
+    #                             threshold=score_med_results["threshold"])
     irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
 
     return irfs_result
@@ -154,10 +140,10 @@ def cwru1():
     from data.cwru import CWRUDataLoader
     from data import cwru_path
     dl = CWRUDataLoader(cwru_path)
-    mh = dl[100]
-    mf = dl[175]
-    rpm = dl.info["175"]["rpm"]
-    fs = 51200
+    mh = dl["100"]
+    mf = dl["175"]
+    rpm = dl.signal_info("175")["rpm"]
+    fs = dl.info["fs"]
     signalt = mf.vib
     model = sig.ARModel.from_signal(mh.vib[:10000], 75)
     residt = model.residuals(signalt)
@@ -174,10 +160,10 @@ def cwru2():
     from data.cwru import CWRUDataLoader
     from data import cwru_path
     dl = CWRUDataLoader(cwru_path)
-    mh = dl[100]
-    mf = dl[192]
-    rpm = dl.info["192"]["rpm"]
-    fs = 48e3
+    mh = dl["100"]
+    mf = dl["192"]
+    rpm = dl.signal_info("192")["rpm"]
+    fs = dl.info["fs"]
     signalt = mf.vib
     model = sig.ARModel.from_signal(mh.vib[:10000], 75)
     residt = model.residuals(signalt)
@@ -187,15 +173,15 @@ def cwru2():
                                 sigshift = -150,
                                 resid = resid,
                                 ordc = 4.7135,
-                                medfiltsize = 100,)
+                                medfiltsize = 100,), fs, rpm
 
 
 @presentation(output_path, ["uia1", "uia2", "unsw1", "unsw2", "cwru1", "cwru2"])
 def present_signatures(list_results: list[tuple[algorithms.IRFSResult, float, float]]):
     n_cols = 3
     fig, ax = plt.subplots(2, 3)
-    for i, result in enumerate(list_results):
-        irfs_result, fs, rpm = result
+    for i, results in enumerate(list_results):
+        irfs_result, fs, rpm = results
         row = i//n_cols
         col = i%n_cols
         axc = ax[row][col] # current axes
