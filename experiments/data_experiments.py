@@ -146,6 +146,12 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
     arsk_ndets, arsk_mags = detect_and_sort(arsk_filt, ordc, ordmin, ordmax)
     print("AR-SK done.")
 
+    # Compound method from
+    # https://www.papers.phmsociety.org/index.php/phmconf/article/download/3522/phmc_23_3522
+    cm_filt = algorithms.skfilt(armed_filt, sknperseg)
+    cm_ndets, cm_mags = detect_and_sort(cm_filt, ordc, ordmin, ordmax)
+    print("Compound method done.")
+
     n_events_max = ordc*signal.x[-1]
 
     irfs_output = MethodOutput("IRFS", irfs_ndets, irfs_mags, irfs_filt)
@@ -153,8 +159,9 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
     armed_output = MethodOutput("AR-MED", armed_ndets, armed_mags, armed_filt)
     sk_output = MethodOutput("SK", sk_ndets, sk_mags, sk_filt)
     arsk_output = MethodOutput("AR-SK", arsk_ndets, arsk_mags, arsk_filt)
+    cm_output = MethodOutput("Compound", cm_ndets, cm_mags, cm_filt)
 
-    method_outputs = [irfs_output, med_output, armed_output, sk_output, arsk_output]
+    method_outputs = [irfs_output, med_output, armed_output, sk_output, arsk_output, cm_output]
 
     results = Output(
         data_name, signal, resid, method_outputs, ordc, n_events_max, irfs_result, residf)
