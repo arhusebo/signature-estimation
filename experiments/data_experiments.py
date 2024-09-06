@@ -100,8 +100,7 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
     residf = score_med_results["filtered"]
 
     # IRFS method.
-    spos1 = algorithms.enedetloc(residf,
-                                 threshold=score_med_results["threshold"])
+    spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
     irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
 
     if use_irfs_eosp:
