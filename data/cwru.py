@@ -55,13 +55,17 @@ class Diagnostics(StrEnum):
 
 
 
-def fault(data_name: str) -> Diagnostics:
+def fault(data_name: str) -> Diagnostics | int:
     if data_name[:6] == "Normal":
-        return Diagnostics.HEALTHY
+        mm = 0
+        return Diagnostics.HEALTHY, mm
     elif data_name[:2] == "OR":
-        return Diagnostics.OUTER
+        mm = int(data_name[2:5])
+        return Diagnostics.OUTER, mm
     elif data_name[0] == "B":
-        return Diagnostics.ROLLER
+        mm = int(data_name[1:4])
+        return Diagnostics.ROLLER, mm
     elif data_name[:2] == "IR":
-        return Diagnostics.INNER
+        mm = int(data_name[2:5])
+        return Diagnostics.INNER, mm
     return None

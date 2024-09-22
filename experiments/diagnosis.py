@@ -72,7 +72,7 @@ def ex_cwru():
         diagnosis_results = p.map(sample_experiment, process_data)
     
     results = [{
-        "actual": cwru.fault(info["name"]),
+        "id": info["id"],
         "diagnosis": cwru.Diagnostics.HEALTHY if not diag else diag,
     } for info, diag in zip(dl.info["data"], diagnosis_results)]
 
@@ -81,5 +81,11 @@ def ex_cwru():
 
 @presentation(output_path, "ex_cwru")
 def present_cwru_diagnosis(results):
+    from data import cwru
+    from data import cwru_path
+    dl = cwru.CWRUDataLoader(cwru_path)
     for result in results:
-        print("\t\t".join(result.values()))
+        signal_id, diagres = result.values()
+        signal_info = dl.signal_info(signal_id)
+        actual, size = cwru.fault(signal_info["name"])
+        print("\t".join([signal_id, actual, str(size), diagres]))
