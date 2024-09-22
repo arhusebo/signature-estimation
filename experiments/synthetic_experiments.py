@@ -73,16 +73,23 @@ def estimate_signat(resid: Signal, indices, siglen, shift):
 
 
 def nmse_shift(sigest, sigtruefunc, shiftmax=100):
-    siglen = len(sigest)
-    sigestpad = np.pad(sigest, shiftmax)
-    sigestpad /= np.linalg.norm(sigest)
+    sigest_ = sigest.copy()
+    sigest_ /= np.linalg.norm(sigest_)
+    siglen = len(sigest_)
     sigtrue = sigtruefunc(np.arange(siglen))
     sigtrue /= np.linalg.norm(sigtrue)
-    # Since both signature estimate and true signature are normalised,
-    # it is not neccesary to normalise the MSE estimate, i.e. by dividing
-    # by the true signal energy.
-    nmse = np.sum([(sigestpad[i:i+siglen] - sigtrue)**2 for i in range(2*shiftmax)], axis=-1)
-    n = np.arange(2*shiftmax)-shiftmax
+
+    if shiftmax>0:
+        sigestpad = np.pad(sigest_, shiftmax)
+        # Since both signature estimate and true signature are normalised,
+        # it is not neccesary to normalise the MSE estimate, i.e. by dividing
+        # by the true signal energy.
+        nmse = np.sum([(sigestpad[i:i+siglen] - sigtrue)**2 for i in range(2*shiftmax)], axis=-1)
+        n = np.arange(2*shiftmax)-shiftmax
+    else:
+        nmse = np.sum((sigest - sigtrue)[np.newaxis,:]**2, axis=-1)
+        n = np.zeros((1,))
+
     return nmse, n
 
 
@@ -93,43 +100,27 @@ def estimate_nmse(sigest, sigtruefunc, shiftmax=100):
 
 
 
-def rmse_benchmark(resid, sigfunc, avg_event_period, ordf):
+def rmse_benchmark(resid, sigfunc, avg_event_period, ordc):
 
     sigestlen = 400
     sigestshift = -150
 
-    ordc = ordf
+    ordc = ordc
     ordmin = ordc-.5
     ordmax = ordc+.5
+    faults = {"":(ordmin, ordmax)}
 
     medfiltsize = 100
 
-    initial_filters = np.zeros((2,medfiltsize), dtype=float)
-    # impulse
-    initial_filters[0, medfiltsize//2] = 1
-    initial_filters[0, medfiltsize//2+1] = -1
-    # step
-    initial_filters[1, :medfiltsize//2] = 1
-    initial_filters[1, medfiltsize//2:] = -1
+    score_med_results = algorithms.score_med(resid, medfiltsize, faults)
+    residf = score_med_results["filtered"]
 
-    scores = np.zeros((len(initial_filters),), dtype=float)
-    medfilts = np.zeros_like(initial_filters)
-
-    for k, initial_filter in enumerate(initial_filters):
-        scores[k], medfilts[k] = algorithms.score_med(resid,
-                                                    initial_filter,
-                                                    ordc,
-                                                    ordmin,
-                                                    ordmax,)
-    # IRFS method. Residuals are filtered using matched filter.
-    residf = algorithms.medfilt(resid, medfilts[np.argmax(scores)])
-    spos1 = algorithms.enedetloc(residf, ordmin, ordmax)
-    # estimate signature using IRFS
-    irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax,
-                                    sigsize=sigestlen, sigshift=sigestshift)
+    # IRFS method
+    spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
+    irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigestlen, sigestshift)
 
     # estimate signature using MED and peak detection
-    medout = algorithms.medfilt(resid, medfilts[0])
+    medout = algorithms.med_filter(resid, medfiltsize, "impulse")
     medenv = abs(scipy.signal.hilbert(medout.y))
     medpeaks, _ = scipy.signal.find_peaks(medenv, distance=avg_event_period/2)
     sigest_med = estimate_signat(resid, medpeaks, sigestlen, sigestshift)
@@ -195,7 +186,7 @@ def mc_snr_signature_anomalous():
     return snr_monte_carlo(n_anomalous=100)
 
 
-def interference_experiment(cf, seed):
+def interference_experiment(kwargs: dict):
     """General random interference experiment. This function is called
     by monte-carlo experiments using multiprocessing and therefore needs
     to be defined on module-level."""
@@ -207,10 +198,10 @@ def interference_experiment(cf, seed):
                            fs,
                            fss,
                            ordf,
-                           interference_std=0.05,
-                           interference_cf=cf,
+                           interference_std=kwargs["interf_std"],
+                           interference_cf=kwargs["interf_cfreq"],
                            interference_bw=1000,
-                           seed=seed)
+                           seed=kwargs["seed"])
 
     return rmse_benchmark(resid, sigfunc, avg_event_period, ordf)
 
@@ -220,17 +211,23 @@ def mc_interference():
     """For a set of central frequencies, runs the random interference
     experiment multiple times using multiprocessing."""
     
-    cf_to_eval = [4e3, 8e3, 12e3, 18e3, 22e3]
-    list_args = []
-    for cf in cf_to_eval:
-        for seed in range(10):
-            args = (cf, seed)
-            list_args.append(args)
+    interf_std = [0.0, 0.05, 0.1, 0.2, 1.0]
+    interf_cfreq = [8e3, 16e3]
+    args = [] 
+    for cfreq in interf_cfreq:
+        for std in interf_std:
+            for seed in range(10):
+                kwargs = {
+                    "interf_std": std,
+                    "interf_cfreq": cfreq,
+                    "seed": seed
+                }
+                args.append(kwargs)
 
     with Pool() as p:
-        rmse = p.starmap(interference_experiment, list_args)
+        rmse = p.map(interference_experiment, args)
     
-    return cf_to_eval, rmse
+    return interf_std, interf_cfreq, rmse
 
 
 @presentation(output_path, ["mc_snr_signature", "mc_snr_signature_anomalous"])
@@ -257,18 +254,20 @@ def present_snr(results: list[npt.ArrayLike, tuple]):
 
 
 @presentation(output_path, "mc_interference")
-def present_interference(result: tuple[npt.ArrayLike, tuple]):
-    fig, ax = plt.subplots(1, 1, sharex=True)
+def present_interference(result):
+    interf_std, interf_cfreq, rmse = result
+    fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True)
     legend = ["IRFS", "MED", "SK"]
     markers = ["o", "^", "d"]
-    cf_to_eval, rmse = result
-    rmse = np.reshape(rmse, (len(cf_to_eval), -1, 3))
-    ax.plot(cf_to_eval, np.mean(rmse, 1))
-    ax.set_ylabel(f"NMSE")
-    ax.grid()
-    ax.set_yticks([0.0, 0.5, 1.0])
+    rmse = np.reshape(rmse, (len(interf_cfreq), len(interf_std), -1, 3))
+    for i, cfreq in enumerate(interf_cfreq):
+        ax[i].plot(interf_std, np.mean(rmse[i,:], 1))
+        ax[i].set_ylabel(f"NMSE")
+        ax[i].grid()
+        ax[i].set_yticks([0.0, 0.5, 1.0])
 
-    ax.set_xlabel("Central frequency")
-    ax.legend(legend, ncol=len(legend), loc="upper center")
+        ax[i].set_xlabel("WGN STD")
+        ax[i].set_title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
+        ax[i].legend(legend, )
     
     plt.show()
