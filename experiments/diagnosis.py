@@ -84,8 +84,16 @@ def present_cwru_diagnosis(results):
     from data import cwru
     from data import cwru_path
     dl = cwru.CWRUDataLoader(cwru_path)
+    print(r"\begin{center}")
+    print(r"\begin{tabular}{ c c c }")
+    print(r"\hline")
+    print(" & ".join(["Actual", "Diagnosed", "Size (mm)"]), r"\\")
+    print(r"\hline")
     for result in results:
         signal_id, diagres = result.values()
         signal_info = dl.signal_info(signal_id)
-        actual, size = cwru.fault(signal_info["name"])
-        print("\t".join([signal_id, actual, str(size), diagres]))
+        actual, fsize = cwru.fault(signal_info["name"])
+        print(" & ".join([actual, diagres, str(fsize)]), r"\\")
+    print(r"\hline")
+    print(r"\end{tabular}")
+    print(r"\end{center}")
