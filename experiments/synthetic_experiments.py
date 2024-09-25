@@ -1,4 +1,5 @@
 from multiprocessing import Pool
+from typing import TypedDict
 
 import numpy as np
 import numpy.typing as npt
@@ -99,8 +100,14 @@ def estimate_nmse(sigest, sigtruefunc, shiftmax=100):
     return nmse[idxmin], n[idxmin]
 
 
+class BenchmarkResults(TypedDict):
+    method: str
+    rmse: float
+    sigest: npt.ArrayLike
+    sigshift: int
 
-def rmse_benchmark(resid, sigfunc, avg_event_period, ordc):
+
+def rmse_benchmark(resid, sigfunc, avg_event_period, ordc) -> list[BenchmarkResults]:
 
     sigestlen = 400
     sigestshift = -150
@@ -131,11 +138,32 @@ def rmse_benchmark(resid, sigfunc, avg_event_period, ordc):
     skpeaks, _ = scipy.signal.find_peaks(skenv, distance=avg_event_period/2)
     sigest_sk = estimate_signat(resid, skpeaks, sigestlen, sigestshift)
 
-    rmse_irfs, _ = estimate_nmse(irfs_result.sigest, sigfunc, 1000)
-    rmse_med, _ = estimate_nmse(sigest_med, sigfunc, 1000)
-    rmse_sk, _ = estimate_nmse(sigest_sk, sigfunc, 1000)
+    rmse_irfs, shift_irfs = estimate_nmse(irfs_result.sigest, sigfunc, 1000)
+    rmse_med, shift_med = estimate_nmse(sigest_med, sigfunc, 1000)
+    rmse_sk, shift_sk = estimate_nmse(sigest_sk, sigfunc, 1000)
 
-    return rmse_irfs, rmse_med, rmse_sk
+    results: list[BenchmarkResults] = [
+        {
+            "method": "IRFS",
+            "rmse": rmse_irfs,
+            "sigest": irfs_result.sigest,
+            "sigshift": shift_irfs,
+        },
+        {
+            "method": "MED",
+            "rmse": rmse_med,
+            "sigest": sigest_med,
+            "sigshift": shift_med,
+        },
+        {
+            "method": "SK",
+            "rmse": rmse_sk,
+            "sigest": sigest_sk,
+            "sigshift": shift_sk,
+        }
+    ]
+
+    return results
 
 
 def general_snr_experiment(snr, seed, n_anomalous):
@@ -154,7 +182,8 @@ def general_snr_experiment(snr, seed, n_anomalous):
                            arate = n_anomalous,
                            seed=seed)
 
-    return rmse_benchmark(resid, sigfunc, avg_event_period, ordf)
+    results = rmse_benchmark(resid, sigfunc, avg_event_period, ordf)
+    return [r["rmse"] for r in results]
 
 
 def snr_monte_carlo(n_anomalous=0, mc_iterations=10):
@@ -203,7 +232,8 @@ def interference_experiment(kwargs: dict):
                            interference_bw=1000,
                            seed=kwargs["seed"])
 
-    return rmse_benchmark(resid, sigfunc, avg_event_period, ordf)
+    results = rmse_benchmark(resid, sigfunc, avg_event_period, ordf)
+    return [r["rmse"] for r in results]
 
 
 @experiment(output_path)
@@ -211,12 +241,12 @@ def mc_interference():
     """For a set of central frequencies, runs the random interference
     experiment multiple times using multiprocessing."""
     
-    interf_std = [0.0, 0.05, 0.1, 0.2, 1.0]
+    interf_std = np.linspace(0.0, 1.0, 10)#[0.0, 0.05, 0.1, 0.2, 1.0]
     interf_cfreq = [8e3, 16e3]
     args = [] 
     for cfreq in interf_cfreq:
         for std in interf_std:
-            for seed in range(10):
+            for seed in range(1):
                 kwargs = {
                     "interf_std": std,
                     "interf_cfreq": cfreq,
@@ -228,6 +258,26 @@ def mc_interference():
         rmse = p.map(interference_experiment, args)
     
     return interf_std, interf_cfreq, rmse
+
+
+@experiment(output_path)
+def interference_signature():
+    """Estimate signatures under one interference condition using each
+    benchmark method."""
+
+    resid = generate_resid(signat = sigfunc,
+                           snr = 1.0,
+                           siglen = siglen,
+                           fs = fs,
+                           fss = fss,
+                           ordf = ordf,
+                           interference_std=0.2,
+                           interference_cf=16e3,
+                           interference_bw=1000)
+
+    
+    results = rmse_benchmark(resid, sigfunc, avg_event_period, ordf)
+    return results
 
 
 @presentation(output_path, ["mc_snr_signature", "mc_snr_signature_anomalous"])
@@ -269,5 +319,21 @@ def present_interference(result):
         ax[i].set_xlabel("WGN STD")
         ax[i].set_title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
         ax[i].legend(legend, )
+        
+        ax[i].invert_xaxis()
+    plt.show()
+
+
+@presentation(output_path, "interference_signature")
+def present_interference_signature(results):
+    fig, ax = plt.subplots(len(results)+1, 1, sharex=True)
+    for i, result in enumerate(results):
+        x = np.arange(len(result["sigest"]))-result["sigshift"]
+        ax[i].plot(x, result["sigest"])
+        ax[i].set_ylabel(result["method"])
     
+    x = np.arange(-400, 400)
+    sigtrue = sigfunc(x)
+    ax[-1].plot(x, sigtrue)
+   
     plt.show()
