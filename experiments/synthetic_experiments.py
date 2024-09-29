@@ -105,9 +105,11 @@ class BenchmarkResults(TypedDict):
     rmse: float
     sigest: npt.ArrayLike
     sigshift: int
+    filter_output: Signal | None
 
 
-def rmse_benchmark(resid, sigfunc, avg_event_period, ordc) -> list[BenchmarkResults]:
+def rmse_benchmark(resid, sigfunc, avg_event_period, ordc,
+                   return_intermediate = False) -> list[BenchmarkResults]:
 
     sigestlen = 400
     sigestshift = -150
@@ -125,6 +127,11 @@ def rmse_benchmark(resid, sigfunc, avg_event_period, ordc) -> list[BenchmarkResu
     # IRFS method
     spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
     irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigestlen, sigestshift)
+
+    irfs_out = np.correlate(resid.y, irfs_result.sigest, mode="valid")
+    irfs_filt = Signal(irfs_out, resid.x[:-len(irfs_result.sigest)+1],
+                        resid.uniform_samples)
+
 
     # estimate signature using MED and peak detection
     medout = algorithms.med_filter(resid, medfiltsize, "impulse")
@@ -148,18 +155,21 @@ def rmse_benchmark(resid, sigfunc, avg_event_period, ordc) -> list[BenchmarkResu
             "rmse": rmse_irfs,
             "sigest": irfs_result.sigest,
             "sigshift": shift_irfs,
+            "filter_output": irfs_filt if return_intermediate else None,
         },
         {
             "method": "MED",
             "rmse": rmse_med,
             "sigest": sigest_med,
             "sigshift": shift_med,
+            "filter_output": medout if return_intermediate else None,
         },
         {
             "method": "SK",
             "rmse": rmse_sk,
             "sigest": sigest_sk,
             "sigshift": shift_sk,
+            "filter_output": skout if return_intermediate else None,
         }
     ]
 
@@ -276,8 +286,9 @@ def interference_signature():
                            interference_bw=1000)
 
     
-    results = rmse_benchmark(resid, sigfunc, avg_event_period, ordf)
-    return results
+    results = rmse_benchmark(resid, sigfunc, avg_event_period, ordf,
+                             return_intermediate=True)
+    return results, resid
 
 
 @presentation(output_path, ["mc_snr_signature", "mc_snr_signature_anomalous"])
@@ -325,7 +336,8 @@ def present_interference(result):
 
 
 @presentation(output_path, "interference_signature")
-def present_interference_signature(results):
+def present_interference_signature(results_):
+    results, resid = results_
     fig, ax = plt.subplots(len(results)+1, 1, sharex=True)
     for i, result in enumerate(results):
         x = np.arange(len(result["sigest"]))-result["sigshift"]
@@ -335,5 +347,12 @@ def present_interference_signature(results):
     x = np.arange(-400, 400)
     sigtrue = sigfunc(x)
     ax[-1].plot(x, sigtrue)
-   
+
+    fig, ax = plt.subplots(len(results)+1, 1, sharex=True)
+    for i, result in enumerate(results):
+        ax[i].plot(result["filter_output"].x, result["filter_output"].y)
+        ax[i].set_ylabel(result["method"])
+
+    ax[-1].plot(resid.x, resid.y)
+    ax[-1].set_xlabel("Revs")
     plt.show()
