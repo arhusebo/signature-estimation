@@ -1,5 +1,5 @@
-from collections import namedtuple
-from typing import Literal
+from collections.abc import Sequence, Generator
+from typing import Literal, TypedDict
 import numpy as np
 import numpy.typing as npt
 import scipy.signal
@@ -8,8 +8,16 @@ import faultevent.event as evt
 import faultevent.signal as sig
 from faultevent import util as utl
 
-IRFSResult = namedtuple("IRFSResult",
-                        ["sigest", "eosp", "magnitude", "certainty", "ordf", "mu", "kappa"])
+
+class IRFSIteration(TypedDict):
+    sigest: Sequence[float]
+    eosp: Sequence[float]
+    magnitude: Sequence[float]
+    certainty: Sequence[float]
+    ordf: float
+    mu: float
+    kappa: float
+
 
 def irfs(data: sig.Signal,
          spos1: npt.ArrayLike,
@@ -20,7 +28,7 @@ def irfs(data: sig.Signal,
          hys: float = .01,
          enedet_max_loc_error: int = 10,
          n_iter: int = 10,
-         threshold_trials = 10,) -> np.ndarray:
+         threshold_trials = 10,) -> Generator[IRFSIteration, None, None]:
     
 
     # initial iteration
@@ -59,8 +67,26 @@ def irfs(data: sig.Signal,
                                        weights=crt_i[idx_sorted])
         det_i = sig.MatchedFilterEnvelopeDetector(sig_i)
         det_list.append(det_i)
-    result = IRFSResult(sig_i, spos_i, mag_i, crt_i, ordf_i, mu_i, kappa_i)
-    return result
+
+        # yield IRFSIteration(
+        #     sigest=sig_i,
+        #     eosp=spos_i,
+        #     magnitude=mag_i,
+        #     certainty=crt_i,
+        #     ordf=ordf_i,
+        #     mu=mu_i,
+        #     kappa=kappa_i,
+        # )
+
+        yield  {
+            "sigest": sig_i,
+            "eosp": spos_i,
+            "magnitude": mag_i,
+            "certainty": crt_i,
+            "ordf": ordf_i,
+            "mu": mu_i,
+            "kappa": kappa_i,
+        }
 
 
 def diagnose_fault(eosp: npt.ArrayLike,

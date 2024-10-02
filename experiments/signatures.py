@@ -1,4 +1,5 @@
 from string import ascii_lowercase
+from collections import deque
 
 import numpy as np
 import matplotlib
@@ -43,7 +44,8 @@ def signature_experiment(sigsize, sigshift, resid, ordc, medfiltsize):
     spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
     #spos1 = algorithms.enedetloc(residf,
     #                             threshold=score_med_results["threshold"])
-    irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
+    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
+    irfs_result, = deque(irfs, maxlen=1)
 
     return irfs_result
 
@@ -185,8 +187,8 @@ def present_signatures(list_results: list[tuple[algorithms.IRFSResult, float, fl
         row = i//n_cols
         col = i%n_cols
         axc = ax[row][col] # current axes
-        revs = np.arange(len(irfs_result.sigest))*rpm/60/fs
-        axc.plot(revs, irfs_result.sigest, c="k")
+        revs = np.arange(len(irfs_result["sigest"]))*rpm/60/fs
+        axc.plot(revs, irfs_result["sigest"], c="k")
         axc.set_yticks([])
         axc.annotate(ascii_lowercase[i], (.8, .7), xycoords="axes fraction")
         if row==1: axc.set_xlabel("Revs")

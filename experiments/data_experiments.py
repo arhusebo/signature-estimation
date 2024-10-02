@@ -1,3 +1,5 @@
+from collections import deque
+
 import numpy as np
 import scipy.signal
 import scipy.stats
@@ -69,7 +71,7 @@ class Output:
     method_outputs: list[MethodOutput]
     ordc: float
     n_events_max: int
-    irfs_result: algorithms.IRFSResult
+    irfs_result: algorithms.IRFSIteration
     residf: sig.Signal
 
 
@@ -101,25 +103,26 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
 
     # IRFS method.
     spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
-    irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
+    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
+    irfs_result, = deque(irfs, maxlen=1)
 
     if use_irfs_eosp:
-        irfs_val_to_sort = irfs_result.magnitude * irfs_result.certainty
+        irfs_val_to_sort = irfs_result["magnitude"] * irfs_result["certainty"]
         irfs_idx = np.argsort(irfs_val_to_sort)[::-1]
-        irfs_nvals = len(irfs_result.eosp)
+        irfs_nvals = len(irfs_result["eosp"])
         irfs_ndets = np.arange(irfs_nvals)+1
         irfs_mags = np.zeros((irfs_nvals,), dtype=float)
         for i in range(irfs_nvals):
-            spos = irfs_result.eosp[irfs_idx][:i+1]
-            irfs_mags[i] = abs(evt.event_spectrum(irfs_result.ordf, spos))
+            spos = irfs_result["eosp"][irfs_idx][:i+1]
+            irfs_mags[i] = abs(evt.event_spectrum(irfs_result["ordf"], spos))
 
     else:
-        irfs_out = np.correlate(resid.y, irfs_result.sigest, mode="valid")
-        irfs_filt = sig.Signal(irfs_out, resid.x[:-len(irfs_result.sigest)+1],
+        irfs_out = np.correlate(resid.y, irfs_result["sigest"], mode="valid")
+        irfs_filt = sig.Signal(irfs_out, resid.x[:-len(irfs_result["sigest"])+1],
                             resid.uniform_samples)
         def irfs_weight(spos):
-            z = evt.map_circle(irfs_result.ordf, spos)
-            u = scipy.stats.vonmises.pdf(z, irfs_result.kappa, loc=irfs_result.mu)
+            z = evt.map_circle(irfs_result["ordf"], spos)
+            u = scipy.stats.vonmises.pdf(z, irfs_result["kappa"], loc=irfs_result["mu"])
             return u
         irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, ordc, ordmin, ordmax, weightfunc=irfs_weight)
     
@@ -295,8 +298,8 @@ def present_event_spectrum(all_results: list[Output]):
     ord = np.arange(0, 10, 0.01)
     fig, ax = plt.subplots(nrows=len(all_results))
     for i, results in enumerate(all_results):
-        spos = results.irfs_result.eosp
-        ordf = results.irfs_result.ordf
+        spos = results.irfs_result["eosp"]
+        ordf = results.irfs_result["ordf"]
         evsp = evt.event_spectrum(ord, spos)
         ax[i].plot(ord, abs(evsp)) 
         ax[i].axvline(ordf, ls="--", c="k", label="Fault order")
@@ -313,10 +316,10 @@ def present_periodic_transform(all_results: list[Output]):
     fig, ax = plt.subplots(nrows=len(all_results), sharex=True)
     zpdf = np.linspace(0, 2*np.pi, 1000)
     for i, results in enumerate(all_results):
-        ordf = results.irfs_result.ordf
-        spos = results.irfs_result.eosp
-        mu = results.irfs_result.mu
-        kappa = results.irfs_result.kappa
+        ordf = results.irfs_result["ordf"]
+        spos = results.irfs_result["eosp"]
+        mu = results.irfs_result["mu"]
+        kappa = results.irfs_result["kappa"]
         z = evt.map_circle(ordf, spos)
         n = evt.period_number(ordf, spos)
         pdf = scipy.stats.vonmises.pdf(zpdf, kappa, loc=mu)

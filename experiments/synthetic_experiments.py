@@ -1,5 +1,6 @@
 from multiprocessing import Pool
 from typing import TypedDict
+from collections import deque
 
 import numpy as np
 import numpy.typing as npt
@@ -126,10 +127,11 @@ def rmse_benchmark(resid, sigfunc, avg_event_period, ordc,
 
     # IRFS method
     spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
-    irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigestlen, sigestshift)
+    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, sigestlen, sigestshift)
+    irfs_result, = deque(irfs, maxlen=1)
 
-    irfs_out = np.correlate(resid.y, irfs_result.sigest, mode="valid")
-    irfs_filt = Signal(irfs_out, resid.x[:-len(irfs_result.sigest)+1],
+    irfs_out = np.correlate(resid.y, irfs_result["sigest"], mode="valid")
+    irfs_filt = Signal(irfs_out, resid.x[:-len(irfs_result["sigest"])+1],
                         resid.uniform_samples)
 
 
@@ -145,7 +147,7 @@ def rmse_benchmark(resid, sigfunc, avg_event_period, ordc,
     skpeaks, _ = scipy.signal.find_peaks(skenv, distance=avg_event_period/2)
     sigest_sk = estimate_signat(resid, skpeaks, sigestlen, sigestshift)
 
-    rmse_irfs, shift_irfs = estimate_nmse(irfs_result.sigest, sigfunc, 1000)
+    rmse_irfs, shift_irfs = estimate_nmse(irfs_result["sigest"], sigfunc, 1000)
     rmse_med, shift_med = estimate_nmse(sigest_med, sigfunc, 1000)
     rmse_sk, shift_sk = estimate_nmse(sigest_sk, sigfunc, 1000)
 
@@ -153,7 +155,7 @@ def rmse_benchmark(resid, sigfunc, avg_event_period, ordc,
         {
             "method": "IRFS",
             "rmse": rmse_irfs,
-            "sigest": irfs_result.sigest,
+            "sigest": irfs_result["sigest"],
             "sigshift": shift_irfs,
             "filter_output": irfs_filt if return_intermediate else None,
         },

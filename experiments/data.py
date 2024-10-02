@@ -4,6 +4,7 @@ import scipy.stats
 import matplotlib.pyplot as plt
 from typing import TypedDict
 from concurrent.futures import ProcessPoolExecutor
+from collections import deque
 
 import faultevent.signal as sig
 import faultevent.event as evt
@@ -90,14 +91,15 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
 
     # IRFS method.
     spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
-    irfs_result = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
+    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift)
+    irfs_result, = deque(irfs, maxlen=1)
 
-    irfs_out = np.correlate(resid.y, irfs_result.sigest, mode="valid")
-    irfs_filt = sig.Signal(irfs_out, resid.x[:-len(irfs_result.sigest)+1],
+    irfs_out = np.correlate(resid.y, irfs_result["sigest"], mode="valid")
+    irfs_filt = sig.Signal(irfs_out, resid.x[:-len(irfs_result["sigest"])+1],
                         resid.uniform_samples)
     def irfs_weight(spos):
-        z = evt.map_circle(irfs_result.ordf, spos)
-        u = scipy.stats.vonmises.pdf(z, irfs_result.kappa, loc=irfs_result.mu)
+        z = evt.map_circle(irfs_result["ordf"], spos)
+        u = scipy.stats.vonmises.pdf(z, irfs_result["kappa"], loc=irfs_result["mu"])
         return u
     
     irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, ordc, ordmin, ordmax, weightfunc=irfs_weight)
