@@ -71,6 +71,27 @@ def fit_cwru():
     return experiment_general(sigfit, sigval, prange)
 
 
+@experiment(results_path)
+def fit_ims():
+    from data.ims import IMSDataLoader, SignalIdentifier
+    from data import ims_path
+
+    id_fit: SignalIdentifier = {
+        "subpath": "2nd_test",
+        "name": "2004.02.12.10.32.39",
+        "channel": 0
+    } 
+    id_validate: SignalIdentifier = {
+        "subpath": "2nd_test",
+        "name": "2004.02.12.10.42.39",
+        "channel": 0
+    }
+
+    dl = IMSDataLoader(ims_path)
+
+    return experiment_general(dl[id_fit].vib, dl[id_validate].vib, range(1, 300))
+
+
 @presentation(results_path, "fit_uia")
 def present_uia(r): present_general(*r) 
 
@@ -81,3 +102,7 @@ def present_unsw(r): present_general(*r)
 
 @presentation(results_path, "fit_cwru")
 def present_cwru(r): present_general(*r)
+
+
+@presentation(results_path, "fit_ims")
+def present_ims(r): present_general(*r)
