@@ -79,7 +79,7 @@ def ex_cwru():
     return results
 
 
-@presentation(output_path, "ex_cwru")
+@presentation(ex_cwru)
 def present_cwru_diagnosis(results):
     from data import cwru
     from data import cwru_path

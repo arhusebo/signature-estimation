@@ -235,7 +235,7 @@ def _present_benchmark_general(ax: plt.Axes, results: Output):
     ax.axvline(results["events_max"], label="Max events", ls="--", c="k")
 
 
-@presentation(output_path, "uia")
+@presentation(uia)
 def present_uia(list_results):
     for results in list_results:
         plt.figure()

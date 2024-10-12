@@ -293,7 +293,7 @@ def interference_signature():
     return results, resid
 
 
-@presentation(output_path, ["mc_snr_signature", "mc_snr_signature_anomalous"])
+@presentation(mc_snr_signature, mc_snr_signature_anomalous)
 def present_snr(results: list[npt.ArrayLike, tuple]):
     fig, ax = plt.subplots(2, 1, sharex=True)
     ylabels = ["A", "B"]
@@ -316,7 +316,7 @@ def present_snr(results: list[npt.ArrayLike, tuple]):
     plt.show()
 
 
-@presentation(output_path, "mc_interference")
+@presentation(mc_interference)
 def present_interference(result):
     interf_std, interf_cfreq, rmse = result
     fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True)
@@ -337,7 +337,7 @@ def present_interference(result):
     plt.show()
 
 
-@presentation(output_path, "interference_signature")
+@presentation(interference_signature)
 def present_interference_signature(results_):
     results, resid = results_
     fig, ax = plt.subplots(len(results)+1, 1, sharex=True)

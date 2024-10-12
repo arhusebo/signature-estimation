@@ -92,17 +92,17 @@ def fit_ims():
     return experiment_general(dl[id_fit].vib, dl[id_validate].vib, range(1, 300))
 
 
-@presentation(results_path, "fit_uia")
+@presentation(fit_uia)
 def present_uia(r): present_general(*r) 
 
 
-@presentation(results_path, "fit_unsw")
+@presentation(fit_unsw)
 def present_unsw(r): present_general(*r) 
 
 
-@presentation(results_path, "fit_cwru")
+@presentation(fit_cwru)
 def present_cwru(r): present_general(*r)
 
 
-@presentation(results_path, "fit_ims")
+@presentation(fit_ims)
 def present_ims(r): present_general(*r)

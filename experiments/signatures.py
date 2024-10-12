@@ -178,7 +178,7 @@ def cwru2():
                                 medfiltsize = 100,), fs, rpm
 
 
-@presentation(output_path, ["uia1", "uia2", "unsw1", "unsw2", "cwru1", "cwru2"])
+@presentation(uia1, uia2, unsw1, unsw2, cwru1, cwru2)
 def present_signatures(list_results: list[tuple[algorithms.IRFSResult, float, float]]):
     n_cols = 3
     fig, ax = plt.subplots(2, 3)

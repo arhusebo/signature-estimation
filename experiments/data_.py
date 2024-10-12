@@ -265,7 +265,7 @@ def _present_benchmark_general(ax: plt.Axes, results: Output):
     ax.axvline(results.n_events_max, label="Max events", ls="--", c="k")
 
 
-@presentation(output_path, ["ex_uia", "ex_unsw", "ex_cwru"])
+@presentation(ex_uia, ex_unsw, ex_cwru)
 def present_benchmarks(all_results: list[Output]):
     fig, ax = plt.subplots(nrows=len(all_results))
     for i, results in enumerate(all_results):
@@ -277,7 +277,7 @@ def present_benchmarks(all_results: list[Output]):
     plt.show()
 
 
-@presentation(output_path, ["ex_uia"])
+@presentation(ex_uia)
 def present_intermediate_uia(results: Output):
     fig, ax = plt.subplots(4, 1, sharex=True)
     ax[0].plot(results.signal.x, results.signal.y)
@@ -293,7 +293,7 @@ def present_intermediate_uia(results: Output):
     plt.show()
 
 
-@presentation(output_path, ["ex_uia", "ex_unsw", "ex_cwru"])
+@presentation(ex_uia, ex_unsw, ex_cwru)
 def present_event_spectrum(all_results: list[Output]):
     ord = np.arange(0, 10, 0.01)
     fig, ax = plt.subplots(nrows=len(all_results))
@@ -311,7 +311,7 @@ def present_event_spectrum(all_results: list[Output]):
     plt.show()
 
 
-@presentation(output_path, ["ex_uia", "ex_unsw", "ex_cwru"])
+@presentation(ex_uia, ex_unsw, ex_cwru)
 def present_periodic_transform(all_results: list[Output]):
     fig, ax = plt.subplots(nrows=len(all_results), sharex=True)
     zpdf = np.linspace(0, 2*np.pi, 1000)
