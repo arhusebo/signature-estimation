@@ -53,7 +53,8 @@ def generate_resid(signat, snr, siglen, fs, fss, ordf,
     if not (interference_cf is None or interference_bw is None):
         Wn_low = interference_cf - interference_bw/2
         Wn_high = interference_cf + interference_bw/2
-        interference = rng.normal(0, interference_std, resid.shape)
+        interference = rng.laplace(0, interference_std, resid.shape)
+        interference = np.sign(interference)*interference**2
         sos = scipy.signal.butter(4, Wn=(Wn_low, Wn_high), btype="bandpass",
                                   output="sos", fs=fs)
         interference = scipy.signal.sosfilt(sos, interference)
@@ -253,12 +254,12 @@ def mc_interference():
     """For a set of central frequencies, runs the random interference
     experiment multiple times using multiprocessing."""
     
-    interf_std = np.linspace(0.0, 1.0, 10)#[0.0, 0.05, 0.1, 0.2, 1.0]
+    interf_std = np.linspace(0.0, .4, 10)
     interf_cfreq = [8e3, 16e3]
     args = [] 
     for cfreq in interf_cfreq:
         for std in interf_std:
-            for seed in range(1):
+            for seed in range(10):
                 kwargs = {
                     "interf_std": std,
                     "interf_cfreq": cfreq,
@@ -319,21 +320,22 @@ def present_snr(results: list[npt.ArrayLike, tuple]):
 @presentation(mc_interference)
 def present_interference(result):
     interf_std, interf_cfreq, rmse = result
-    fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True)
+    fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True, sharey=True)
     legend = ["IRFS", "MED", "SK"]
     markers = ["o", "^", "d"]
     rmse = np.reshape(rmse, (len(interf_cfreq), len(interf_std), -1, 3))
+    ax[0].set_ylabel(f"NMSE")
     for i, cfreq in enumerate(interf_cfreq):
         ax[i].plot(interf_std, np.mean(rmse[i,:], 1))
-        ax[i].set_ylabel(f"NMSE")
         ax[i].grid()
         ax[i].set_yticks([0.0, 0.5, 1.0])
 
-        ax[i].set_xlabel("WGN STD")
+        ax[i].set_xlabel("Noise model STD")
         ax[i].set_title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
-        ax[i].legend(legend, )
         
         ax[i].invert_xaxis()
+    
+    ax[0].legend(legend)
     plt.show()
 
 
