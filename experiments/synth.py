@@ -33,7 +33,7 @@ def sigtilde(signat, sigloc, n):
 
 def generate_resid(signat, snr, siglen, fs, fss, ordf,
                    stdz=0.0, arate=0, signata=None, seed=0,
-                   interference_std: float = 0,
+                   sir: float = 0,
                    interference_cf: float | None = None,
                    interference_bw: float | None = None):
     rng = np.random.default_rng(seed)
@@ -53,11 +53,14 @@ def generate_resid(signat, snr, siglen, fs, fss, ordf,
     if not (interference_cf is None or interference_bw is None):
         Wn_low = interference_cf - interference_bw/2
         Wn_high = interference_cf + interference_bw/2
-        interference = rng.laplace(0, interference_std, resid.shape)
+        interference = rng.laplace(0, 1, resid.shape)
         interference = np.sign(interference)*interference**2
         sos = scipy.signal.butter(4, Wn=(Wn_low, Wn_high), btype="bandpass",
                                   output="sos", fs=fs)
         interference = scipy.signal.sosfilt(sos, interference)
+        intpow = sigpow/sir
+        interference = np.sqrt(intpow)*interference/np.std(interference)
+
         resid += interference
 
     out = Signal.from_uniform_samples(resid, 1/(fs/fss))
@@ -240,7 +243,7 @@ def interference_experiment(kwargs: dict):
                            fs,
                            fss,
                            ordf,
-                           interference_std=kwargs["interf_std"],
+                           sir=kwargs["sir"],
                            interference_cf=kwargs["interf_cfreq"],
                            interference_bw=1000,
                            seed=kwargs["seed"])
@@ -254,14 +257,14 @@ def mc_interference():
     """For a set of central frequencies, runs the random interference
     experiment multiple times using multiprocessing."""
     
-    interf_std = np.linspace(0.0, .4, 10)
+    sir = np.linspace(5, 0.2, 10)
     interf_cfreq = [8e3, 16e3]
     args = [] 
     for cfreq in interf_cfreq:
-        for std in interf_std:
-            for seed in range(10):
+        for sir_ in sir:
+            for seed in range(1):
                 kwargs = {
-                    "interf_std": std,
+                    "sir": sir_,
                     "interf_cfreq": cfreq,
                     "seed": seed
                 }
@@ -270,7 +273,7 @@ def mc_interference():
     with Pool() as p:
         rmse = p.map(interference_experiment, args)
     
-    return interf_std, interf_cfreq, rmse
+    return sir, interf_cfreq, rmse
 
 
 @experiment(output_path)
@@ -319,18 +322,20 @@ def present_snr(results: list[npt.ArrayLike, tuple]):
 
 @presentation(mc_interference)
 def present_interference(result):
-    interf_std, interf_cfreq, rmse = result
+    sir_to_eval, interf_cfreq, rmse = result
     fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True, sharey=True)
     legend = ["IRFS", "MED", "SK"]
     markers = ["o", "^", "d"]
-    rmse = np.reshape(rmse, (len(interf_cfreq), len(interf_std), -1, 3))
+    rmse = np.reshape(rmse, (len(interf_cfreq), len(sir_to_eval), -1, 3))
+
+    sir = 10*np.log10(sir_to_eval)
     ax[0].set_ylabel(f"NMSE")
     for i, cfreq in enumerate(interf_cfreq):
-        ax[i].plot(interf_std, np.mean(rmse[i,:], 1))
+        ax[i].plot(sir, np.mean(rmse[i,:], 1))
         ax[i].grid()
         ax[i].set_yticks([0.0, 0.5, 1.0])
 
-        ax[i].set_xlabel("Noise model STD")
+        ax[i].set_xlabel("SIR (dB)")
         ax[i].set_title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
         
         ax[i].invert_xaxis()
