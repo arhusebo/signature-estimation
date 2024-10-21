@@ -277,6 +277,33 @@ def mc_interference():
 
 
 @experiment(output_path)
+def mc_interference_frequency():
+    """For a fixed signal-to-interference ratio, runs a
+    "random interference" experiment for varying central frequency."""
+    
+    sir = 1.0
+    interf_cfreq = np.linspace(2e3, 20e3, 10)
+    args = [] 
+    for cfreq in interf_cfreq:
+        for seed in range(10):
+            kwargs = {
+                "sir": sir,
+                "interf_cfreq": cfreq,
+                "seed": seed
+            }
+            args.append(kwargs)
+
+    with Pool() as p:
+        rmse = p.map(interference_experiment, args)
+    
+    return {
+        "sir": sir,
+        "interf_cfreq": interf_cfreq,
+        "rmse": rmse,
+    }
+
+
+@experiment(output_path)
 def interference_signature():
     """Estimate signatures under one interference condition using each
     benchmark method."""
@@ -341,6 +368,33 @@ def present_interference(result):
         ax[i].invert_xaxis()
     
     ax[0].legend(legend)
+    plt.show()
+
+
+@presentation(mc_interference_frequency)
+def present_interference_frequency(result):
+    #fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True, sharey=True)
+    fig, ax = plt.subplots()
+    legend = ["IRFS", "MED", "SK"]
+    markers = ["o", "^", "d"]
+    rmse = np.reshape(result["rmse"], (len(result["interf_cfreq"]), -1, 3))
+    rmse = np.mean(rmse, 1)
+
+    sir = 10*np.log10(result["sir"])
+    ax.set_ylabel(f"NMSE")
+
+    cfreq_khz = result["interf_cfreq"]/1e3
+
+    ax.plot(cfreq_khz, rmse[:,0])
+    ax.plot(cfreq_khz, rmse[:,1])
+    ax.plot(cfreq_khz, rmse[:,2])
+    ax.grid()
+    ax.set_yticks([0.0, 0.5, 1.0])
+
+    ax.set_xlabel("Interference central frequency (kHz)")
+    ax.set_title(f"Signal-to-interference ratio: {result["sir"]} (dB)")
+    
+    ax.legend(legend)
     plt.show()
 
 
