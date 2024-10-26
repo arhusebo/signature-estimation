@@ -262,7 +262,7 @@ def mc_interference():
     args = [] 
     for cfreq in interf_cfreq:
         for sir_ in sir:
-            for seed in range(1):
+            for seed in range(20):
                 kwargs = {
                     "sir": sir_,
                     "interf_cfreq": cfreq,
@@ -285,7 +285,7 @@ def mc_interference_frequency():
     interf_cfreq = np.linspace(2e3, 20e3, 10)
     args = [] 
     for cfreq in interf_cfreq:
-        for seed in range(10):
+        for seed in range(20):
             kwargs = {
                 "sir": sir,
                 "interf_cfreq": cfreq,
@@ -350,7 +350,8 @@ def present_snr(results: list[npt.ArrayLike, tuple]):
 @presentation(mc_interference)
 def present_interference(result):
     sir_to_eval, interf_cfreq, rmse = result
-    fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True, sharey=True)
+    fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True, sharey=True,
+                           figsize=(6.4, 3.0))
     legend = ["IRFS", "MED", "SK"]
     markers = ["o", "^", "d"]
     rmse = np.reshape(rmse, (len(interf_cfreq), len(sir_to_eval), -1, 3))
@@ -360,7 +361,7 @@ def present_interference(result):
     for i, cfreq in enumerate(interf_cfreq):
         ax[i].plot(sir, np.mean(rmse[i,:], 1))
         ax[i].grid()
-        ax[i].set_yticks([0.0, 0.5, 1.0])
+        ax[i].set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
 
         ax[i].set_xlabel("SIR (dB)")
         ax[i].set_title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
@@ -368,13 +369,14 @@ def present_interference(result):
         ax[i].invert_xaxis()
     
     ax[0].legend(legend)
+    plt.tight_layout()
     plt.show()
 
 
 @presentation(mc_interference_frequency)
 def present_interference_frequency(result):
     #fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True, sharey=True)
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(6.4, 3.5))
     legend = ["IRFS", "MED", "SK"]
     markers = ["o", "^", "d"]
     rmse = np.reshape(result["rmse"], (len(result["interf_cfreq"]), -1, 3))
@@ -389,12 +391,13 @@ def present_interference_frequency(result):
     ax.plot(cfreq_khz, rmse[:,1])
     ax.plot(cfreq_khz, rmse[:,2])
     ax.grid()
-    ax.set_yticks([0.0, 0.5, 1.0])
+    ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
 
     ax.set_xlabel("Interference central frequency (kHz)")
     ax.set_title(f"Signal-to-interference ratio: {result["sir"]} (dB)")
     
     ax.legend(legend)
+    plt.tight_layout()
     plt.show()
 
 
