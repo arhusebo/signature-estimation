@@ -1,6 +1,7 @@
 from multiprocessing import Pool
-from typing import TypedDict
+from typing import TypedDict, Callable, NotRequired
 from collections import deque
+from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -14,56 +15,107 @@ import algorithms
 from simsim import experiment, presentation
 
 
+class FaultDescriptor(TypedDict):
+    name: NotRequired[str]
+    ord: float
+    std: float
+    signature: Callable[[int], npt.ArrayLike]
+
+
+class AnomalyDescriptor(TypedDict):
+    amount: int
+    signature: Callable[[int], npt.ArrayLike]
+
+
+class InterferenceDescriptor(TypedDict):
+    sir: float
+    central_frequency: float
+    bandwidth: float
+
+
+class ResidualDescriptor(TypedDict):
+    length: int
+    sample_frequency: float
+    shaft_frequency: float
+    faults: Sequence[FaultDescriptor]
+    snr: NotRequired[float]
+    anomaly: NotRequired[AnomalyDescriptor]
+    interference: NotRequired[InterferenceDescriptor]
+
+
+def avg_fault_period(residual: ResidualDescriptor,
+                         fault_index: int = 0) -> float:
+    """Computes the average number of shaft revolutions between fault event"""
+    return (residual["sample_frequency"]
+            /residual["shaft_frequency"])/residual["faults"][fault_index]["ord"]
+
 output_path = "results/synth"
 
+MC_ITERATIONS = 20
 
-# synthethic signal parameters
-siglen = 100000 # length of synthetic signal
-fs = 51200 # virtual sample frequency
-fss = 1000/60 # shaft frequency
-ordf = 5.0 # fault order
-avg_event_period = (fs/fss)/ordf # in samples
-sigfunc = lambda n: (n>=0)*np.sinc(n/8+1)
-sigfunca = lambda n: (n>=0)*np.sinc(n/2+1)
+common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
+common_anomaly_signature = lambda n: (n>=0)*np.sinc(n/2+1)
+
+common_residual: ResidualDescriptor = {
+    "length": 100000,
+    "sample_frequency": 51200,
+    "shaft_frequency": 1000/60,
+    "faults": [
+        {
+            "ord": 5.0,
+            "signature": common_fault_signature,
+            "std": 0.01,
+        }
+    ]
+}
 
 
 def sigtilde(signat, sigloc, n):
     return np.sum([signat(np.arange(n)-n0) for n0 in sigloc], axis=0)
 
 
-def generate_resid(signat, snr, siglen, fs, fss, ordf,
-                   stdz=0.0, arate=0, signata=None, seed=0,
-                   sir: float = 0,
-                   interference_cf: float | None = None,
-                   interference_bw: float | None = None):
+def generate_resid(residual: ResidualDescriptor, seed=0):
     rng = np.random.default_rng(seed)
-    df = (fs/fss)/ordf
-    sigloc = np.arange(0, siglen, df, dtype=float)
-    sigloc += rng.standard_normal(len(sigloc))*stdz
-    signal = sigtilde(signat, sigloc, siglen)
+    resid = np.zeros((residual["length"]), dtype=float)
 
-    sigloca = rng.uniform(0, siglen, arate)
-    signal += sigtilde(signata, sigloca, siglen)
+    # Generate fault signatures
+    for fault in residual["faults"]:
+        df = (residual["sample_frequency"]
+              /residual["shaft_frequency"])/fault["ord"]
+        eosp = np.arange(0, residual["length"], df, dtype=float)
+        eosp += rng.standard_normal(len(eosp))*fault["std"]
+        resid += sigtilde(fault["signature"], eosp, residual["length"])
 
-    sigpow = np.var(signal)
-    noisepow = sigpow/snr
-    noise = rng.standard_normal(siglen) * np.sqrt(noisepow)
-    resid = signal + noise
+    # Generate anomaly signatures
+    if anomaly := residual.get("anomaly", None):
+        eosp = rng.uniform(0, residual["length"], anomaly["amount"])
+        resid += sigtilde(anomaly["signature"], eosp, residual["length"])
+    
+    # Generate signal noise
+    if snr := residual.get("snr", None):
+        sigpow = np.var(resid)
+        noisepow = sigpow/snr
+        noise = rng.standard_normal(residual["length"]) * np.sqrt(noisepow)
+        resid += noise
 
-    if not (interference_cf is None or interference_bw is None):
-        Wn_low = interference_cf - interference_bw/2
-        Wn_high = interference_cf + interference_bw/2
-        interference = rng.laplace(0, 1, resid.shape)
-        interference = np.sign(interference)*interference**2
-        sos = scipy.signal.butter(4, Wn=(Wn_low, Wn_high), btype="bandpass",
-                                  output="sos", fs=fs)
-        interference = scipy.signal.sosfilt(sos, interference)
-        intpow = sigpow/sir
-        interference = np.sqrt(intpow)*interference/np.std(interference)
+    # Generate random interference componen
+    if interference := residual.get("interference", None):
+        Wn_low = interference["central_frequency"] - interference["bandwidth"]/2
+        Wn_high = interference["central_frequency"] + interference["bandwidth"]/2
+        interf = rng.laplace(0, 1, resid.shape)
+        interf = np.sign(interf)*interf**2
+        interf_sos = scipy.signal.butter(4, Wn=(Wn_low, Wn_high),
+                                         btype="bandpass",
+                                         output="sos",
+                                         fs=residual["sample_frequency"],)
+        interf = scipy.signal.sosfilt(interf_sos, interf)
+        intpow = sigpow/interference["sir"]
+        interf = np.sqrt(intpow)*interf/np.std(interf)
+        resid += interf
 
-        resid += interference
-
-    out = Signal.from_uniform_samples(resid, 1/(fs/fss))
+    # Instantiate and return signal object
+    dx = 1/(residual["sample_frequency"]/residual["shaft_frequency"])
+    out = Signal.from_uniform_samples(resid, dx)
     return out
 
 
@@ -110,21 +162,25 @@ class BenchmarkResults(TypedDict):
     rmse: float
     sigest: npt.ArrayLike
     sigshift: int
-    filter_output: Signal | None
 
 
-def rmse_benchmark(resid, sigfunc, avg_event_period, ordc,
-                   return_intermediate = False) -> list[BenchmarkResults]:
+def rmse_benchmark(residual: ResidualDescriptor,
+                   fault_index: int = 0,
+                   seed: int = 0,
+                   sigestlen: int = 400,
+                   sigestshift: int = -150,
+                   medfiltsize: int = 100,) -> Sequence[BenchmarkResults]:
 
-    sigestlen = 400
-    sigestshift = -150
-
+    resid=generate_resid(residual, seed=seed)
+    fault = residual["faults"][fault_index]
+    avg_event_period = avg_fault_period(residual, fault_index)
+    ordc = fault["ord"]
+    sigfunc = fault["signature"]
+    
     ordc = ordc
     ordmin = ordc-.5
     ordmax = ordc+.5
     faults = {"":(ordmin, ordmax)}
-
-    medfiltsize = 100
 
     score_med_results = algorithms.score_med(resid, medfiltsize, faults)
     residf = score_med_results["filtered"]
@@ -155,50 +211,44 @@ def rmse_benchmark(resid, sigfunc, avg_event_period, ordc,
     rmse_med, shift_med = estimate_nmse(sigest_med, sigfunc, 1000)
     rmse_sk, shift_sk = estimate_nmse(sigest_sk, sigfunc, 1000)
 
-    results: list[BenchmarkResults] = [
+    results: Sequence[BenchmarkResults] = [
         {
             "method": "IRFS",
             "rmse": rmse_irfs,
             "sigest": irfs_result["sigest"],
             "sigshift": shift_irfs,
-            "filter_output": irfs_filt if return_intermediate else None,
         },
         {
             "method": "MED",
             "rmse": rmse_med,
             "sigest": sigest_med,
             "sigshift": shift_med,
-            "filter_output": medout if return_intermediate else None,
         },
         {
             "method": "SK",
             "rmse": rmse_sk,
             "sigest": sigest_sk,
             "sigshift": shift_sk,
-            "filter_output": skout if return_intermediate else None,
         }
     ]
 
     return results
 
 
-def general_snr_experiment(snr, seed, n_anomalous):
+def common_snr_experiment(snr, seed, n_anomalous):
     """General SNR experiment. This function is called by monte-carlo
     experiments using multiprocessing and therefore needs to be defined
     on module-level."""
+    
+    residual: ResidualDescriptor = common_residual.copy()
+    residual["snr"] = snr
+    residual["anomaly"] = {
+        "amount": n_anomalous,
+        "signature": common_anomaly_signature,
+    }
 
-    # generate residuals at given snr
-    resid = generate_resid(sigfunc,
-                           snr,
-                           siglen,
-                           fs,
-                           fss,
-                           ordf,
-                           signata = sigfunca,
-                           arate = n_anomalous,
-                           seed=seed)
-
-    results = rmse_benchmark(resid, sigfunc, avg_event_period, ordf)
+    results = rmse_benchmark(residual, seed=seed)
+    
     return [r["rmse"] for r in results]
 
 
@@ -206,7 +256,7 @@ def snr_monte_carlo(n_anomalous=0, mc_iterations=10):
     """For a set of SNR-values, runs the general snr experiment multiple
     times using multiprocessing."""
     
-    snr_to_eval = np.logspace(-2, 0, 5)
+    snr_to_eval = np.logspace(-2, 0, 5).tolist()
     list_args = []
     for snr in snr_to_eval:
         for seed in range(mc_iterations):
@@ -214,87 +264,79 @@ def snr_monte_carlo(n_anomalous=0, mc_iterations=10):
             list_args.append(args)
 
     with Pool() as p:
-        rmse = p.starmap(general_snr_experiment, list_args)
+        rmse = p.starmap(common_snr_experiment, list_args)
     
     return snr_to_eval, rmse
 
 
-@experiment(output_path)
-def mc_snr_signature():
+@experiment(output_path, json=True)
+def ex_snr():
     """Synthetic data experiment A - No anomlaous events present"""
-    return snr_monte_carlo(n_anomalous=0)
+    return snr_monte_carlo(n_anomalous=0, mc_iterations=MC_ITERATIONS)
 
 
-@experiment(output_path)
-def mc_snr_signature_anomalous():
+@experiment(output_path, json=True)
+def ex_snr_anomalous():
     """Synthetic data experiment B - Anomalous events present"""
-    return snr_monte_carlo(n_anomalous=100)
+    return snr_monte_carlo(n_anomalous=100, mc_iterations=MC_ITERATIONS)
 
 
-def interference_experiment(kwargs: dict):
+def interference_experiment(interference: InterferenceDescriptor, seed=0):
     """General random interference experiment. This function is called
     by monte-carlo experiments using multiprocessing and therefore needs
     to be defined on module-level."""
 
-    # generate residuals with interference component at given central frequency
-    resid = generate_resid(sigfunc,
-                           1.0,
-                           siglen,
-                           fs,
-                           fss,
-                           ordf,
-                           sir=kwargs["sir"],
-                           interference_cf=kwargs["interf_cfreq"],
-                           interference_bw=1000,
-                           seed=kwargs["seed"])
+    residual: ResidualDescriptor = common_residual.copy()
+    residual["snr"] = 1.0
+    residual["interference"] = interference
 
-    results = rmse_benchmark(resid, sigfunc, avg_event_period, ordf)
+    results = rmse_benchmark(residual, seed=seed)
+
     return [r["rmse"] for r in results]
 
 
-@experiment(output_path)
-def mc_interference():
+@experiment(output_path, json=True)
+def ex_sir():
     """For a set of central frequencies, runs the random interference
     experiment multiple times using multiprocessing."""
     
-    sir = np.linspace(5, 0.2, 10)
-    interf_cfreq = [8e3, 16e3]
+    sir = np.linspace(5, 0.2, 10).tolist()
+    interf_cfreq = 16e3
     args = [] 
-    for cfreq in interf_cfreq:
-        for sir_ in sir:
-            for seed in range(20):
-                kwargs = {
-                    "sir": sir_,
-                    "interf_cfreq": cfreq,
-                    "seed": seed
-                }
-                args.append(kwargs)
+    for sir_ in sir:
+        for seed in range(MC_ITERATIONS):
+            interference: InterferenceDescriptor = {
+                "sir": sir_,
+                "central_frequency": interf_cfreq,
+                "bandwidth": 1e3,
+            }
+            args.append((interference, seed))
 
     with Pool() as p:
-        rmse = p.map(interference_experiment, args)
+        rmse = p.starmap(interference_experiment, args)
     
     return sir, interf_cfreq, rmse
 
 
-@experiment(output_path)
-def mc_interference_frequency():
+@experiment(output_path, json=True)
+def ex_sir_frequency():
     """For a fixed signal-to-interference ratio, runs a
     "random interference" experiment for varying central frequency."""
     
     sir = 1.0
-    interf_cfreq = np.linspace(2e3, 20e3, 10)
+    interf_cfreq = np.linspace(2e3, 20e3, 10).tolist()
     args = [] 
     for cfreq in interf_cfreq:
-        for seed in range(20):
-            kwargs = {
+        for seed in range(MC_ITERATIONS):
+            interference: InterferenceDescriptor = {
                 "sir": sir,
-                "interf_cfreq": cfreq,
-                "seed": seed
+                "central_frequency": cfreq,
+                "bandwidth": 1e3,
             }
-            args.append(kwargs)
+            args.append((interference, seed))
 
     with Pool() as p:
-        rmse = p.map(interference_experiment, args)
+        rmse = p.starmap(interference_experiment, args)
     
     return {
         "sir": sir,
@@ -303,29 +345,8 @@ def mc_interference_frequency():
     }
 
 
-@experiment(output_path)
-def interference_signature():
-    """Estimate signatures under one interference condition using each
-    benchmark method."""
-
-    resid = generate_resid(signat = sigfunc,
-                           snr = 1.0,
-                           siglen = siglen,
-                           fs = fs,
-                           fss = fss,
-                           ordf = ordf,
-                           interference_std=0.2,
-                           interference_cf=16e3,
-                           interference_bw=1000)
-
-    
-    results = rmse_benchmark(resid, sigfunc, avg_event_period, ordf,
-                             return_intermediate=True)
-    return results, resid
-
-
-@presentation(mc_snr_signature, mc_snr_signature_anomalous)
-def present_snr(results: list[npt.ArrayLike, tuple]):
+@presentation(ex_snr, ex_snr_anomalous)
+def pr_snr(results: Sequence[npt.ArrayLike, tuple]):
     fig, ax = plt.subplots(2, 1, sharex=True)
     ylabels = ["A", "B"]
     legend = ["IRFS", "MED", "SK"]
@@ -347,34 +368,30 @@ def present_snr(results: list[npt.ArrayLike, tuple]):
     plt.show()
 
 
-@presentation(mc_interference)
-def present_interference(result):
+@presentation(ex_sir)
+def pr_sir(result):
     sir_to_eval, interf_cfreq, rmse = result
-    fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True, sharey=True,
-                           figsize=(6.4, 3.0))
+    plt.figure(figsize=(6.4, 3.0))
     legend = ["IRFS", "MED", "SK"]
     markers = ["o", "^", "d"]
-    rmse = np.reshape(rmse, (len(interf_cfreq), len(sir_to_eval), -1, 3))
+    rmse = np.reshape(rmse, (len(sir_to_eval), -1, 3))
 
     sir = 10*np.log10(sir_to_eval)
-    ax[0].set_ylabel(f"NMSE")
-    for i, cfreq in enumerate(interf_cfreq):
-        ax[i].plot(sir, np.mean(rmse[i,:], 1))
-        ax[i].grid()
-        ax[i].set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    plt.ylabel(f"NMSE")
+    plt.plot(sir, np.mean(rmse, 1))
+    plt.grid()
+    plt.yticks([0.0, 0.25, 0.5, 0.75, 1.0])
 
-        ax[i].set_xlabel("SIR (dB)")
-        ax[i].set_title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
-        
-        ax[i].invert_xaxis()
-    
-    ax[0].legend(legend)
+    plt.xlabel("SIR (dB)")
+    #plt.title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
+    #plt.gca().invert_xaxis()
+    plt.legend(legend)
     plt.tight_layout()
     plt.show()
 
 
-@presentation(mc_interference_frequency)
-def present_interference_frequency(result):
+@presentation(ex_sir_frequency)
+def pr_sir_frequency(result):
     #fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True, sharey=True)
     fig, ax = plt.subplots(figsize=(6.4, 3.5))
     legend = ["IRFS", "MED", "SK"]
@@ -385,7 +402,7 @@ def present_interference_frequency(result):
     sir = 10*np.log10(result["sir"])
     ax.set_ylabel(f"NMSE")
 
-    cfreq_khz = result["interf_cfreq"]/1e3
+    cfreq_khz = np.divide(result["interf_cfreq"], 1e3)
 
     ax.plot(cfreq_khz, rmse[:,0])
     ax.plot(cfreq_khz, rmse[:,1])
@@ -398,27 +415,4 @@ def present_interference_frequency(result):
     
     ax.legend(legend)
     plt.tight_layout()
-    plt.show()
-
-
-@presentation(interference_signature)
-def present_interference_signature(results_):
-    results, resid = results_
-    fig, ax = plt.subplots(len(results)+1, 1, sharex=True)
-    for i, result in enumerate(results):
-        x = np.arange(len(result["sigest"]))-result["sigshift"]
-        ax[i].plot(x, result["sigest"])
-        ax[i].set_ylabel(result["method"])
-    
-    x = np.arange(-400, 400)
-    sigtrue = sigfunc(x)
-    ax[-1].plot(x, sigtrue)
-
-    fig, ax = plt.subplots(len(results)+1, 1, sharex=True)
-    for i, result in enumerate(results):
-        ax[i].plot(result["filter_output"].x, result["filter_output"].y)
-        ax[i].set_ylabel(result["method"])
-
-    ax[-1].plot(resid.x, resid.y)
-    ax[-1].set_xlabel("Revs")
     plt.show()
