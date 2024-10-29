@@ -53,8 +53,10 @@ output_path = "results/synth"
 
 MC_ITERATIONS = 20
 
-common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
+#common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
 common_anomaly_signature = lambda n: (n>=0)*np.sinc(n/2+1)
+def common_fault_signature(n):
+    return (n>=0)*np.sinc(n/8+1)
 
 common_residual: ResidualDescriptor = {
     "length": 100000,
@@ -343,6 +345,94 @@ def ex_sir_frequency():
         "interf_cfreq": interf_cfreq,
         "rmse": rmse,
     }
+
+
+def diagnosis_benchmark(residual: ResidualDescriptor,
+                        faults: algorithms.fault_search,
+                        seed: int = 0,
+                        medfiltsize=100):
+    
+    resid = generate_resid(residual, seed=seed)
+    
+    search_intervals = faults.values()
+    score_med_results = algorithms.score_med(resid, medfiltsize, search_intervals)
+    residf = score_med_results["filtered"]
+
+    # IRFS method, 1st iteration
+    eosp = algorithms.enedetloc(residf, search_intervals=search_intervals)
+    irfs_diagnosis = algorithms.diagnose_fault(eosp, faults)
+    med_diagnosis = algorithms.diagnose_fault_simple(
+        signal=algorithms.med_filter(resid, medfiltsize, "impulse"),
+        faults=faults,)
+    sk_diagnosis = algorithms.diagnose_fault_simple(
+        signal=algorithms.skfilt(resid),
+        faults=faults,)
+    return [
+        {
+            "name": "IRFS",
+            "diagnosis": irfs_diagnosis,
+        },
+        {
+            "name": "MED",
+            "diagnosis": med_diagnosis,
+        },
+        {
+            "name": "SK",
+            "diagnosis": sk_diagnosis,
+        }
+    ]
+
+
+@experiment(output_path, json=True)
+def ex_diagnosis():
+    """Performs a diagnosis benchmark for multiple signal realizations
+    of varying levels of SNR"""
+    
+    faults: list[FaultDescriptor] = [
+        {
+            "name": "inner race",
+            "ord": 5.4152,
+            "signature": common_fault_signature,
+            "std": 0.01,
+        },
+        {
+            "name": "outer race",
+            "ord": 3.5848,
+            "signature": common_fault_signature,
+            "std": 0.01
+        }
+    ]
+
+    faults_to_consider: algorithms.fault_search = {
+        fault["name"]: tuple(fault["ord"]+d for d in [-0.1, 0.1]) for fault in faults
+    }
+
+    snr_to_eval = np.logspace(-3, 0, 5).tolist()
+    args = []
+    for fault in faults:
+        for snr in snr_to_eval:
+            for seed in range(MC_ITERATIONS):
+                residual = common_residual.copy()
+                residual["faults"] = [fault]
+                residual["snr"] = snr
+                args.append((residual, faults_to_consider, seed))
+    
+    with Pool() as p:
+        diagnosis_results = p.starmap(diagnosis_benchmark, args)
+
+    # am I having a brain malfunction?
+    results = [] 
+    idx_results = 0
+    for fault in faults:
+        for snr in snr_to_eval:
+            for seed in range(MC_ITERATIONS):
+                results.append({
+                    "fault": fault["name"],
+                    "snr": snr,
+                    "diagnosis": diagnosis_results[idx_results]
+                })
+                idx_results += 1
+    return results
 
 
 @presentation(ex_snr, ex_snr_anomalous)

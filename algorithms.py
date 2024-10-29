@@ -89,10 +89,13 @@ def irfs(data: sig.Signal,
         }
 
 
-def diagnose_fault(eosp: npt.ArrayLike,
-                   faults: dict,
-                   fault_threshold: float = 0.0,
-                   ) -> tuple[float, float] | None:
+class DiagnosedFault(TypedDict):
+    fault: str
+    ord: float
+
+type fault_search = dict[str, tuple[float, float]]
+
+def diagnose_fault(eosp: npt.ArrayLike, faults: fault_search) -> DiagnosedFault:
     """Diagnose the fault type given event shaft positions and a list
     of dictionaries containing fault characteristics. Fault
     dictionaries must be on the form
@@ -100,17 +103,38 @@ def diagnose_fault(eosp: npt.ArrayLike,
         "OR" : (4.9, 5.1),
         "IR" : (3.7, 3.8)
     }
+    Assumes faulty condition.
     """
 
     best_score = 0.0
-    results = None
-    for key, interval in faults.items():
-        _, magnitude = evt.find_order(eosp, *interval, density=1e3)
+    for fault, interval in faults.items():
+        ord, magnitude = evt.find_order(eosp, *interval, density=1e3)
         score = magnitude/np.sqrt(len(eosp)) if len(eosp) else 0.0
-        if score > best_score >= fault_threshold:
-            results = key
+        if score > best_score:
             best_score = score
-    return results
+            best_result: DiagnosedFault = {"fault": fault, "ord": ord}
+    
+    return best_result
+
+
+def diagnose_fault_simple(signal: sig.Signal, faults: fault_search) -> DiagnosedFault:
+    """Similar as diagnose_fault, but is based on the envelope spectrum."""
+    best_score = 0.0
+    envelope = scipy.signal.hilbert(signal.y)
+    spec = np.fft.rfft(abs(envelope))
+    orders = np.fft.rfftfreq(len(signal), signal.dx)
+    for fault, (ord_low, ord_high) in faults.items():
+        search_window = np.argwhere(np.logical_and(ord_low <= orders, orders <= ord_high))
+        spec_window = spec[search_window]
+        orders_window = orders[search_window]
+        idx_max = np.argmax(abs(spec_window))
+        score = abs(spec_window[idx_max])
+        ordf = orders_window[idx_max][0]
+        if score > best_score:
+            best_score = score
+            best_result: DiagnosedFault = {"fault": fault, "ord": ordf}
+    
+    return best_result
 
 
 def med_initial(filter_length: int, shape: Literal["step", "impulse"]):
@@ -238,11 +262,10 @@ def score_med_old(data: sig.Signal,
 
 
 def score_med(signal: sig.Signal,
-              filter_length: int, faults: dict) -> Literal["impulse", "step"]:
+              filter_length: int, search_intervals: list[tuple[float, float]]) -> Literal["impulse", "step"]:
     """Find the best MED initial conditions given possible faults"""
     # Find best pre-filtering MED filter for initial detection
     initial_shapes = ["impulse", "step"]
-    search_intervals = faults.values()
     best_score = 0
     for initial_shape in initial_shapes:
         filtered = med_filter(signal, filter_length, initial_shape)
