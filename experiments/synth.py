@@ -407,7 +407,7 @@ def ex_diagnosis():
         fault["name"]: tuple(fault["ord"]+d for d in [-0.1, 0.1]) for fault in faults
     }
 
-    snr_to_eval = np.logspace(-3, 0, 5).tolist()
+    snr_to_eval = np.logspace(-3, 0, 10).tolist()
     args = []
     for fault in faults:
         for snr in snr_to_eval:
@@ -429,7 +429,8 @@ def ex_diagnosis():
                 results.append({
                     "fault": fault["name"],
                     "snr": snr,
-                    "diagnosis": diagnosis_results[idx_results]
+                    "order": fault["ord"],
+                    "methods": diagnosis_results[idx_results]
                 })
                 idx_results += 1
     return results
@@ -505,4 +506,39 @@ def pr_sir_frequency(result):
     
     ax.legend(legend)
     plt.tight_layout()
+    plt.show()
+
+
+@presentation(ex_diagnosis)
+def pr_diagnosis(results):
+    faults = ["inner race", "outer race"]
+    methods = ["IRFS", "MED", "SK"]
+
+    fig, ax = plt.subplots(len(faults), 1, sharex=True)
+    for i, fault in enumerate(faults):
+        fault_results = [fault_result for fault_result in results
+                         if fault_result["fault"] == fault]
+
+        snr_list = sorted(list(set([result["snr"] for result in fault_results])))
+        rate = []
+        for snr in snr_list:
+            rate.append([])
+            for j, method in enumerate(methods):
+                methods_gen = (
+                    result["methods"][j] for result in fault_results
+                    if result["snr"] == snr)
+                method_rate = 0 
+                for count, method in enumerate(methods_gen):
+                    correct = method["diagnosis"]["fault"] == fault
+                    method_rate += int(correct)
+                rate[-1].append(100*method_rate/(count+1))
+
+
+        snr_list_db = 10*np.log10(snr_list)
+        ax[i].plot(snr_list_db, rate, label=methods)
+        ax[i].legend()
+        ax[i].set_ylabel(f"{fault.capitalize()} accuracy (%)")
+        
+    ax[-1].set_xlabel("SNR (db)")
+    
     plt.show()
