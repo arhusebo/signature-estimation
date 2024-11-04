@@ -39,6 +39,7 @@ class ResidualDescriptor(TypedDict):
     shaft_frequency: float
     faults: Sequence[FaultDescriptor]
     snr: NotRequired[float]
+    snir: NotRequired[float]
     anomaly: NotRequired[AnomalyDescriptor]
     interference: NotRequired[InterferenceDescriptor]
 
@@ -51,7 +52,7 @@ def avg_fault_period(residual: ResidualDescriptor,
 
 output_path = "results/synth"
 
-MC_ITERATIONS = 20
+MC_ITERATIONS = 30
 
 #common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
 common_anomaly_signature = lambda n: (n>=0)*np.sinc(n/2+1)
@@ -93,12 +94,14 @@ def generate_resid(residual: ResidualDescriptor, seed=0):
         eosp = rng.uniform(0, residual["length"], anomaly["amount"])
         resid += sigtilde(anomaly["signature"], eosp, residual["length"])
     
+    sigpow = np.var(resid) # total signatures power
+
     # Generate signal noise
     if snr := residual.get("snr", None):
-        sigpow = np.var(resid)
         noisepow = sigpow/snr
         noise = rng.standard_normal(residual["length"]) * np.sqrt(noisepow)
-        resid += noise
+    else:
+        noise = np.zeros_like(resid)
 
     # Generate random interference componen
     if interference := residual.get("interference", None):
@@ -112,8 +115,20 @@ def generate_resid(residual: ResidualDescriptor, seed=0):
                                          fs=residual["sample_frequency"],)
         interf = scipy.signal.sosfilt(interf_sos, interf)
         intpow = sigpow/interference["sir"]
-        interf = np.sqrt(intpow)*interf/np.std(interf)
-        resid += interf
+        interf *= np.sqrt(intpow)/np.std(interf)
+    else:
+        interf = np.zeros_like(resid)
+
+    ni = noise + interf # noise and interference
+    if (snir := residual.get("snir", None)) and (snr or interference):
+        # SNIR = var(resid) / var(noise + interf)
+        # var(noise + interf) = var(resid) / SNIR
+        # std(noise + interf) = sqrt(var(resid) / SNIR)
+        # std(noise + interf) = std(resid) / sqrt(SNIR)
+        pow_ni = sigpow/snir
+        ni *= np.sqrt(pow_ni)/np.std(ni)
+    
+    resid += ni
 
     # Instantiate and return signal object
     dx = 1/(residual["sample_frequency"]/residual["shaft_frequency"])
@@ -386,7 +401,7 @@ def diagnosis_benchmark(residual: ResidualDescriptor,
 @experiment(output_path, json=True)
 def ex_diagnosis():
     """Performs a diagnosis benchmark for multiple signal realizations
-    of varying levels of SNR"""
+    of varying levels of signal-to-noise-and-interference ratio (SNIR)"""
     
     faults: list[FaultDescriptor] = [
         {
@@ -407,14 +422,20 @@ def ex_diagnosis():
         fault["name"]: tuple(fault["ord"]+d for d in [-0.1, 0.1]) for fault in faults
     }
 
-    snr_to_eval = np.logspace(-3, 0, 10).tolist()
+    snir_to_eval = np.logspace(-3, 0, 10).tolist()
     args = []
     for fault in faults:
-        for snr in snr_to_eval:
+        for snir in snir_to_eval:
             for seed in range(MC_ITERATIONS):
                 residual = common_residual.copy()
+                residual["snr"] = 1.0
+                residual["interference"] = {
+                    "sir": 5.0,
+                    "bandwidth": 1e3,
+                    "central_frequency": 16e3,
+                }
                 residual["faults"] = [fault]
-                residual["snr"] = snr
+                residual["snir"] = snir
                 args.append((residual, faults_to_consider, seed))
     
     with Pool() as p:
@@ -424,11 +445,11 @@ def ex_diagnosis():
     results = [] 
     idx_results = 0
     for fault in faults:
-        for snr in snr_to_eval:
+        for snir in snir_to_eval:
             for seed in range(MC_ITERATIONS):
                 results.append({
                     "fault": fault["name"],
-                    "snr": snr,
+                    "snir": snir,
                     "order": fault["ord"],
                     "methods": diagnosis_results[idx_results]
                 })
@@ -519,14 +540,14 @@ def pr_diagnosis(results):
         fault_results = [fault_result for fault_result in results
                          if fault_result["fault"] == fault]
 
-        snr_list = sorted(list(set([result["snr"] for result in fault_results])))
+        snir_list = sorted(list(set([result["snir"] for result in fault_results])))
         rate = []
-        for snr in snr_list:
+        for snir in snir_list:
             rate.append([])
             for j, method in enumerate(methods):
                 methods_gen = (
                     result["methods"][j] for result in fault_results
-                    if result["snr"] == snr)
+                    if result["snir"] == snir)
                 method_rate = 0 
                 for count, method in enumerate(methods_gen):
                     correct = method["diagnosis"]["fault"] == fault
@@ -534,11 +555,11 @@ def pr_diagnosis(results):
                 rate[-1].append(100*method_rate/(count+1))
 
 
-        snr_list_db = 10*np.log10(snr_list)
-        ax[i].plot(snr_list_db, rate, label=methods)
+        snir_list_db = 10*np.log10(snir_list)
+        ax[i].plot(snir_list_db, rate, label=methods)
         ax[i].legend()
         ax[i].set_ylabel(f"{fault.capitalize()} accuracy (%)")
         
-    ax[-1].set_xlabel("SNR (db)")
+    ax[-1].set_xlabel("SNIR (db)")
     
     plt.show()
