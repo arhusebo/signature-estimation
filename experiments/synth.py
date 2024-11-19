@@ -199,7 +199,7 @@ def rmse_benchmark(residual: ResidualDescriptor,
     ordmax = ordc+.5
     faults = {"":(ordmin, ordmax)}
 
-    score_med_results = algorithms.score_med(resid, medfiltsize, faults)
+    score_med_results = algorithms.score_med(resid, medfiltsize, [(ordmin, ordmax)])
     residf = score_med_results["filtered"]
 
     # IRFS method
