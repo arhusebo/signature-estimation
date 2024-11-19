@@ -10,7 +10,7 @@ output_path = "results/diagnosis"
 
 
 def diagnosis(signal: Signal, faults, medfiltsize):
-    prefilt = score_med(signal, medfiltsize, faults)
+    prefilt = score_med(signal, medfiltsize, faults.values())
     spos = enedetloc(prefilt["filtered"], search_intervals=faults.values())
     fault_name, ordf1 = diagnose_fault(spos, faults)
     return fault_name

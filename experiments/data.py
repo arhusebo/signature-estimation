@@ -84,9 +84,8 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
 
     ordmin = ordc-.5
     ordmax = ordc+.5
-    faults = {"":(ordmin, ordmax)}
 
-    score_med_results = algorithms.score_med(resid, medfiltsize, faults)
+    score_med_results = algorithms.score_med(resid, medfiltsize, [(ordmin, ordmax)])
     residf = score_med_results["filtered"]
 
     # IRFS method.
