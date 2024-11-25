@@ -117,6 +117,7 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
 
     else:
         irfs_out = np.correlate(resid.y, irfs_result["sigest"], mode="valid")
+        irfs_out = abs(scipy.signal.hilbert(irfs_out))
         irfs_filt = sig.Signal(irfs_out, resid.x[:-len(irfs_result["sigest"])+1],
                             resid.uniform_samples)
         def irfs_weight(spos):
@@ -276,19 +277,22 @@ def present_benchmarks(all_results: list[Output]):
     plt.show()
 
 
-@presentation(ex_uia)
-def present_intermediate_uia(results: Output):
-    fig, ax = plt.subplots(4, 1, sharex=True)
-    ax[0].plot(results.signal.x, results.signal.y)
-    ax[0].set_ylabel("Signal")
-    ax[1].plot(results.resid.x, results.resid.y)
-    ax[1].set_ylabel("Residual")
-    ax[2].plot(results.residf.x, results.residf.y)
-    ax[2].set_ylabel("Pre-filtered")
-    ax[3].plot(results.method_outputs[0].signal_filtered.x, results.method_outputs[0].signal_filtered.y)
-    ax[3].set_ylabel("IRFS-fitlered")
-    ax[3].set_xlabel("Revs")
-    ax[3].set_xlim(1, 12)
+@presentation(ex_uia, ex_unsw, ex_cwru)
+def present_intermediate(results_all: Output):
+    for results in results_all:
+        fig, ax = plt.subplots(4, 1, sharex=True)
+        ax[0].plot(results.signal.x, results.signal.y)
+        ax[0].set_ylabel("Signal")
+        ax[1].plot(results.resid.x, results.resid.y)
+        ax[1].set_ylabel("Residual")
+        ax[2].plot(results.residf.x, results.residf.y)
+        ax[2].set_ylabel("Pre-filtered")
+        ax[3].plot(results.method_outputs[0].signal_filtered.x, results.method_outputs[0].signal_filtered.y)
+        ax[3].axhline(results.irfs_result["threshold"], c="k", ls="--", label="Threshold")
+        ax[3].scatter(results.irfs_result["eosp"], results.irfs_result["magnitude"], c="k", label="Detected events")
+        ax[3].set_ylabel("IRFS-fitlered")
+        ax[3].set_xlabel("Revs")
+        ax[3].set_xlim(1, 12)
     plt.show()
 
 
@@ -311,6 +315,15 @@ def present_event_spectrum(all_results: list[Output]):
 
 
 @presentation(ex_uia, ex_unsw, ex_cwru)
+def present_signatures(all_results: list[Output]):
+    fig, ax = plt.subplots(nrows=len(all_results))
+    for i, results in enumerate(all_results):
+        ax[i].plot(results.irfs_result["sigest"])
+        ax[i].set_ylabel(f"Signature estimate\n{results.data_name}")
+    plt.show()
+
+
+@presentation(ex_uia, ex_unsw, ex_cwru)
 def present_periodic_transform(all_results: list[Output]):
     fig, ax = plt.subplots(nrows=len(all_results), sharex=True)
     zpdf = np.linspace(0, 2*np.pi, 1000)
@@ -326,7 +339,7 @@ def present_periodic_transform(all_results: list[Output]):
         ax[i].scatter(z, n, label="Transformed EOSPs", c="k")
         ax_pdf.plot(zpdf, pdf, label="Certainty metric")
         ax_pdf.set_ylabel("Certainty metric")
-        ax[i].set_ylabel("#Period")
+        ax[i].set_ylabel(f"#Period\n({results.data_name})")
         ax[i].set_xticks([0, np.pi/2, np.pi, 3/2*np.pi, 2*np.pi],
                          [r"$0$", r"$\frac{\pi}{2}$", r"$\pi$", r"$\frac{3\pi}{2}$", r"$2\pi$"])
         ax[i].set_xlim(0, 2*np.pi)
