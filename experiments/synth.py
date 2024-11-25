@@ -340,7 +340,7 @@ def ex_sir_frequency():
     "random interference" experiment for varying central frequency."""
     
     sir = 1.0
-    interf_cfreq = np.linspace(2e3, 20e3, 10).tolist()
+    interf_cfreq = np.linspace(2e3, 30e3, 10).tolist()
     args = [] 
     for cfreq in interf_cfreq:
         for seed in range(MC_ITERATIONS):
@@ -421,7 +421,7 @@ def ex_diagnosis():
         fault["name"]: tuple(fault["ord"]+d for d in [-0.1, 0.1]) for fault in faults
     }
 
-    snir_to_eval = np.logspace(-3, 0, 10).tolist()
+    snir_to_eval = np.logspace(-2, 0, 10).tolist()
     args = []
     for fault in faults:
         for snir in snir_to_eval:
