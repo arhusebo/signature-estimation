@@ -17,6 +17,7 @@ class IRFSIteration(TypedDict):
     ordf: float
     mu: float
     kappa: float
+    threshold: float
 
 
 def irfs(data: sig.Signal,
@@ -86,6 +87,7 @@ def irfs(data: sig.Signal,
             "ordf": ordf_i,
             "mu": mu_i,
             "kappa": kappa_i,
+            "threshold": thr_i,
         }
 
 
