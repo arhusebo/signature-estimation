@@ -61,7 +61,7 @@ class Output(TypedDict):
     method_outputs: list[MethodOutput]
     ordc: float
     events_max: int
-    irfs_result: algorithms.IRFSResult
+    irfs_result: algorithms.IRFSIteration
 
 
 
@@ -227,18 +227,99 @@ def uia():
         return list(executor.map(ex_uia, ex_args))
 
 
-def _present_benchmark_general(ax: plt.Axes, results: Output):
-    for method_output in results["method_outputs"]:
-        frac = method_output["magnitudes"]/method_output["detections"]
-        ax.plot(method_output["detections"], frac, label=method_output["name"])
-    ax.axvline(results["events_max"], label="Max events", ls="--", c="k")
+def ex_unsw(process_kwargs):
+    file_path = process_kwargs["file_path"]
+    dl = process_kwargs["dl"]
+    model = process_kwargs["model"]
+    print("Working on file "+str(file_path))
+
+    mf = dl[file_path]
+    
+    angfhz = 6 # angular frequency in Hz
+    fs = 51200 # sample frequency
+    signalt = mf.vib # signal in time domain
+    residt = model.residuals(signalt) # AR residuals in time domain
+
+    # Angular speed of these measurements are approximately constant,
+    # no resampling is applied.
+    signal = sig.Signal.from_uniform_samples(signalt.y, angfhz/fs)
+    resid = sig.Signal.from_uniform_samples(residt.y, angfhz/fs)
+    kwargs = {
+        "data_name": "UNSW",
+        "sigsize": 200,
+        "sigshift": -100,
+        "signal": signal,
+        "resid": resid,
+        "ordc": 3.56,
+        "medfiltsize": 100,
+        "sknperseg": 256,
+    }
+    return benchmark_experiment(**kwargs)
+
+
+@experiment(output_path)
+def unsw():
+    from data.unsw import UNSWDataLoader
+    from data import unsw_path
+    dl = UNSWDataLoader(unsw_path)
+
+    mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
+    model = sig.ARModel.from_signal(mh.vib[:10000], 41)
+
+    ex_args =  []
+    for file_path in dl.path.glob("Test 1/6Hz/*.mat"):
+        ex_args.append({
+            "file_path": file_path,
+            "model": model,
+            "dl": dl,
+        })
+
+    with ProcessPoolExecutor() as executor:
+        return list(executor.map(ex_unsw, ex_args))
+
+
+def present_best(list_results: list[Output], n: int):
+    scores = []
+    for results in list_results:
+        mag = results["method_outputs"][0]["magnitudes"]
+        det = results["method_outputs"][0]["detections"]
+        scores.append(sum(mag/det))
+    
+    include_min_score = np.sort(scores)[-n]
+    results_to_show = list(filter(
+        lambda x: x[1] >= include_min_score,
+        zip(list_results, scores)))
+
+    nrows = len(results_to_show)//2
+    ncols = 2
+
+    fig, ax = plt.subplots(nrows=nrows, ncols=ncols,
+                           sharey=True, sharex=True,)
+                           #figsize=(3.5, 6.0))
+    for i, (results, score) in enumerate(results_to_show):
+        row = i//2
+        col = i%2
+
+        for method_output in results["method_outputs"]:
+            frac = method_output["magnitudes"]/method_output["detections"]
+            ax[row][col].plot(method_output["detections"], frac, label=method_output["name"])
+        ax[row][col].axvline(results["events_max"], label="Max events", ls="--", c="k")
+        if row == nrows-1:
+            ax[row][col].set_xlabel("Detections")
+        if col == 0:
+            ax[row][col].set_ylabel("True\npositive rate")
+
+        ax[row, col].grid(which="both")
+    h, l = ax[-1][-1].get_legend_handles_labels()
+    plt.figlegend(h, l, ncols=4, loc="upper center")
+    plt.show()
 
 
 @presentation(uia)
-def present_uia(list_results):
-    for results in list_results:
-        plt.figure()
-        ax = plt.gca()
-        _present_benchmark_general(ax, results)
-        plt.show()
-        
+def present_uia(list_results: list[Output]):
+    present_best(list_results, 4)
+
+
+@presentation(unsw)
+def present_unsw(list_results: list[Output]):
+    present_best(list_results, 6)
