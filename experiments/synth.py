@@ -340,7 +340,7 @@ def ex_sir_frequency():
     "random interference" experiment for varying central frequency."""
     
     sir = 1.0
-    interf_cfreq = np.linspace(2e3, 30e3, 10).tolist()
+    interf_cfreq = np.linspace(1e3, 22e3, 10).tolist()
     args = [] 
     for cfreq in interf_cfreq:
         for seed in range(MC_ITERATIONS):
@@ -480,9 +480,11 @@ def pr_snr(results: Sequence[npt.ArrayLike, tuple]):
 
 
 @presentation(ex_sir)
-def pr_sir(result):
+def pr_sir_basic(result):
+    fig = plt.figure(figsize=(6.4/2, 2.5))
+    
+    # plot NMSE against SIR
     sir_to_eval, interf_cfreq, rmse = result
-    plt.figure(figsize=(6.4, 3.0))
     legend = ["IRFS", "MED", "SK"]
     markers = ["o", "^", "d"]
     rmse = np.reshape(rmse, (len(sir_to_eval), -1, 3))
@@ -494,9 +496,59 @@ def pr_sir(result):
     plt.yticks([0.0, 0.25, 0.5, 0.75, 1.0])
 
     plt.xlabel("SIR (dB)")
-    #plt.title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
+    # plt.title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
     #plt.gca().invert_xaxis()
-    plt.legend(legend)
+
+    #h, l = ax[0].get_legend_handles_labels()
+    plt.legend(legend, ncol=len(legend), loc="upper center",
+                bbox_to_anchor=(0.5, 1.3))
+    plt.tight_layout()
+    plt.show()
+
+
+@presentation(ex_sir, ex_sir_frequency)
+def pr_sir(result_):
+    result = result_[1]
+    fig, ax = plt.subplots(1, 2, sharey=True, figsize=(6.4, 2.5))
+
+    # plot NMSE against interference central frequency
+    legend = ["IRFS", "MED", "SK"]
+    markers = ["o", "^", "d"]
+    rmse = np.reshape(result["rmse"], (len(result["interf_cfreq"]), -1, 3))
+    rmse = np.mean(rmse, 1)
+
+    sir = 10*np.log10(result["sir"])
+    ax[0].set_ylabel(f"NMSE")
+
+    cfreq_khz = np.divide(result["interf_cfreq"], 1e3)
+
+    for i in range(rmse.shape[1]):
+        ax[0].plot(cfreq_khz, rmse[:,i])
+    ax[0].grid()
+    ax[0].set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+
+    ax[0].set_xlabel("Interference central frequency (kHz)")
+    # ax[0].set_title(f"Signal-to-interference ratio: {sir} (dB)")
+    
+    # plot NMSE against SIR
+    result = result_[0]
+    sir_to_eval, interf_cfreq, rmse = result
+    legend = ["IRFS", "MED", "SK"]
+    markers = ["o", "^", "d"]
+    rmse = np.reshape(rmse, (len(sir_to_eval), -1, 3))
+
+    sir = 10*np.log10(sir_to_eval)
+    # ax[1].set_ylabel(f"NMSE")
+    ax[1].plot(sir, np.mean(rmse, 1))
+    ax[1].grid()
+    ax[1].set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+
+    ax[1].set_xlabel("SIR (dB)")
+    # plt.title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
+    #plt.gca().invert_xaxis()
+
+    #h, l = ax[0].get_legend_handles_labels()
+    plt.figlegend(legend)
     plt.tight_layout()
     plt.show()
 
@@ -522,7 +574,7 @@ def pr_sir_frequency(result):
     ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
 
     ax.set_xlabel("Interference central frequency (kHz)")
-    ax.set_title(f"Signal-to-interference ratio: {result["sir"]} (dB)")
+    ax.set_title(f"Signal-to-interference ratio: {sir} (dB)")
     
     ax.legend(legend)
     plt.tight_layout()

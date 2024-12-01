@@ -347,3 +347,137 @@ def present_periodic_transform(all_results: list[Output]):
     ax[-1].set_xlabel("Offset")
     ax[0].legend(bbox_to_anchor=(0.5, 1.4), loc="upper center")
     plt.show()
+
+
+@experiment(output_path)
+def irfs_uia() -> algorithms.IRFSIteration:
+    from data.uia import UiADataLoader
+    from data import uia_path
+    dl = UiADataLoader(uia_path)
+    mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
+    mf = dl["y2016-m09-d24/00-40-22 1000rpm - 51200Hz - 100LOR.h5"]
+    
+    rpm = 1000 # angular speed in rpm
+    fs = 51200 # sample frequency
+    signalt = mf.vib # signal in time domain
+    model = sig.ARModel.from_signal(mh.vib[:10000], 117) # AR model
+    residt = model.residuals(signalt) # AR residuals in time domain
+
+    signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
+    resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
+    
+    ordc = 6.7087166
+    ordmin = ordc-.5
+    ordmax = ordc+.5
+
+    score_med_results = algorithms.score_med(resid, 100, [(ordmin, ordmax)])
+    residf = score_med_results["filtered"]
+
+    # IRFS method.
+    spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
+    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, 400, -150, hys=0.2)
+    irfs_result, = deque(irfs, maxlen=1)
+    return {
+        "irfs": irfs_result,
+        "signal": signal,
+        "resid": resid,
+    }
+
+
+@presentation(irfs_uia)
+def pr_intermediate_uia(results):
+
+    fig, ax = plt.subplots(3, 1, sharex=True)
+
+    ax[0].plot(results["signal"].x, results["signal"].y)
+    ax[0].set_ylabel("Signal")
+
+    ax[1].plot(results["resid"].x, results["resid"].y)
+    ax[1].set_ylabel("Residual")
+
+    mf = np.correlate(results["resid"].y,
+                      results["irfs"]["sigest"],
+                      mode="valid")
+    mf = abs(scipy.signal.hilbert(mf))
+    mf = sig.Signal(mf,
+                    results["resid"].x[:-len(results["irfs"]["sigest"])+1],
+                    results["resid"].uniform_samples)
+
+    ax[2].plot(mf.x, mf.y)
+    # ax3.axhline(results["irfs"]["threshold"], c="k", ls="--", label="Threshold")
+    ax[2].scatter(results["irfs"]["eosp"], results["irfs"]["magnitude"],
+                  c="k", label="Detected events")
+    ax[2].set_ylabel("IRFS-filtered")
+    ax[2].set_xlabel("Revs")
+    ax[2].set_xlim(1, 12)
+    
+    h, l = ax[2].get_legend_handles_labels()
+    plt.figlegend(h, l, loc="upper center")
+    plt.show()
+
+
+@presentation(irfs_uia)
+def pr_irfs_uia(results):
+
+    dotsize = 5
+
+    ax1 = plt.subplot(4, 1, 1)
+    ax1.plot(results["signal"].x, results["signal"].y, c="k", lw=0.5)
+    ax1.set_ylabel("Signal")
+    ax2 = plt.subplot(4, 1, 2)
+    ax2.plot(results["resid"].x, results["resid"].y, c="k", lw=0.5)
+    ax2.set_ylabel("Residual")
+
+    mf = np.correlate(results["resid"].y,
+                      results["irfs"]["sigest"],
+                      mode="valid")
+    mf = abs(scipy.signal.hilbert(mf))
+    mf = sig.Signal(mf,
+                    results["resid"].x[:-len(results["irfs"]["sigest"])+1],
+                    results["resid"].uniform_samples)
+
+    ax3 = plt.subplot(4, 1, 3)
+    ax3.plot(mf.x, mf.y, c="k", lw=0.5)
+    # ax3.axhline(results["irfs"]["threshold"], c="k", ls="--", label="Threshold")
+    ax3.scatter(results["irfs"]["eosp"], results["irfs"]["magnitude"],
+                  c="lightsteelblue", s=dotsize, label="Detected events")
+    ax3.set_ylabel("IRFS-filtered")
+    ax3.set_xlabel("Revs")
+    ax3.set_xlim(1, 12)
+    # ax3.legend()
+
+    ax1.sharex(ax3)
+    ax2.sharex(ax3)
+
+    ax4 = plt.subplot(4, 2, 7)
+    ordf = results["irfs"]["ordf"]
+    eosp = results["irfs"]["eosp"]
+    ordx = np.arange(0, 10, 0.01)
+    evsp = evt.event_spectrum(ordx, eosp)
+    ax4.axvline(ordf, c="lightsteelblue", lw=5, label="Fault order")
+    ax4.plot(ordx, abs(evsp), c="k", lw=0.5) 
+    # ax4.axhline(len(eosp), ls="-", c="gray", label="#Detected events")
+    ax4.set_xlim(ordx[0], ordx[-1])
+    ax4.set_ylabel(f"Event spectrum\nmagnitude")
+    ax4.set_xlabel("Order [X]")
+    # ax4.legend()
+    
+    ax5 = plt.subplot(4, 2, 8)
+    ordf = results["irfs"]["ordf"]
+    zpdf = np.linspace(0, 2*np.pi, 1000)
+    kappa = results["irfs"]["kappa"]
+    mu = results["irfs"]["mu"]
+    z = evt.map_circle(ordf, eosp)
+    n = evt.period_number(ordf, eosp)
+    pdf = scipy.stats.vonmises.pdf(zpdf, kappa, loc=mu)
+    ax_pdf = ax5.twinx()
+    ax5.scatter(z, n, label="Transformed EOSPs", c="lightsteelblue", s=dotsize)
+    ax_pdf.plot(zpdf, pdf, label="Certainty metric", c="k")
+    ax_pdf.set_ylabel("Certainty metric")
+    ax5.set_ylabel(f"#Period")
+    ax5.set_xticks([0, np.pi/2, np.pi, 3/2*np.pi, 2*np.pi],
+                        [r"$0$", r"$\frac{\pi}{2}$", r"$\pi$", r"$\frac{3\pi}{2}$", r"$2\pi$"])
+    ax5.set_xlim(0, 2*np.pi)
+
+    plt.tight_layout()
+    plt.show()
