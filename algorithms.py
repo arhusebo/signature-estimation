@@ -57,6 +57,7 @@ def irfs(data: sig.Signal,
         thr_i = thr1*np.linalg.norm(det_list[i-1].h)
         cmp_i = sig.Comparison.from_comparator(stat_i, thr_i, thr_i*hys)
         spos_i, mag_i = np.asarray(sig.matched_filter_location_estimates(cmp_i))
+        if len(spos_i) == 0: return
         ordf_i, _ = utl.find_order(spos_i, ordmin, ordmax)
         mu_i, kappa_i = evt.fit_vonmises(ordf_i, spos_i)
         z_i = evt.map_circle(ordf_i, spos_i)

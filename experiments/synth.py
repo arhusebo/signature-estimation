@@ -7,6 +7,7 @@ import numpy as np
 import numpy.typing as npt
 import scipy.linalg
 import scipy.signal
+import matplotlib
 import matplotlib.pyplot as plt
 
 from faultevent.signal import Signal
@@ -316,7 +317,10 @@ def ex_sir():
     """For a set of central frequencies, runs the random interference
     experiment multiple times using multiprocessing."""
     
-    sir = np.linspace(5, 0.2, 10).tolist()
+    # sir = np.linspace(5, 0.2, 10).tolist()
+    sir_max = 5.0
+    sir_min = 0.2
+    sir = np.logspace(np.log10(sir_max), np.log10(sir_min), 5).tolist()
     interf_cfreq = 16e3
     args = [] 
     for sir_ in sir:
@@ -458,7 +462,8 @@ def ex_diagnosis():
 
 @presentation(ex_snr, ex_snr_anomalous)
 def pr_snr(results: Sequence[npt.ArrayLike, tuple]):
-    fig, ax = plt.subplots(2, 1, sharex=True)
+    matplotlib.rcParams.update({"font.size": 6})
+    fig, ax = plt.subplots(2, 1, sharex=True, figsize=(3.5, 2.0))
     ylabels = ["A", "B"]
     legend = ["IRFS", "MED", "SK"]
     markers = ["o", "^", "d"]
@@ -466,8 +471,10 @@ def pr_snr(results: Sequence[npt.ArrayLike, tuple]):
         snr_to_eval, rmse = result
         rmse = np.reshape(rmse, (len(snr_to_eval), -1, 3))
         snr = 10*np.log10(snr_to_eval)
-        ax[i].plot(snr, np.mean(rmse, 1), marker=markers[i])
-        ax[i].set_ylabel(f"NMSE ({ylabels[i]})")
+        mean_rmse = np.mean(rmse, 1)
+        for j in range(mean_rmse.shape[-1]):
+            ax[i].plot(snr, mean_rmse[:,j], marker=markers[j])
+        ax[i].set_ylabel(f"NMSE\n{ylabels[i]}")
         ax[i].grid()
         ax[i].set_yticks([0.0, 0.5, 1.0])
         ax[i].set_xticks(range(-20, 1, 5))
@@ -476,12 +483,16 @@ def pr_snr(results: Sequence[npt.ArrayLike, tuple]):
     ax[0].legend(legend, ncol=len(legend), loc="upper center",
                  bbox_to_anchor=(0.5, 1.3))
     
+    plt.tight_layout(pad=0.0)
     plt.show()
 
 
 @presentation(ex_sir)
 def pr_sir_basic(result):
-    fig = plt.figure(figsize=(6.4/2, 2.5))
+    
+    plt.figure(figsize=(3.5, 1.0))
+    matplotlib.rcParams.update({"font.size": 6})
+
     
     # plot NMSE against SIR
     sir_to_eval, interf_cfreq, rmse = result
@@ -491,18 +502,23 @@ def pr_sir_basic(result):
 
     sir = 10*np.log10(sir_to_eval)
     plt.ylabel(f"NMSE")
-    plt.plot(sir, np.mean(rmse, 1))
+    mean_rmse = np.mean(rmse, 1)
+    for i in range(mean_rmse.shape[-1]):
+        plt.plot(sir, mean_rmse[:,i], marker=markers[i])
     plt.grid()
-    plt.yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    # plt.yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    plt.yticks([0.0, 0.5, 1.0])
+    plt.ylim(0, 1.25)
+    plt.xticks(np.round(sir, 2))
 
     plt.xlabel("SIR (dB)")
     # plt.title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
     #plt.gca().invert_xaxis()
 
     #h, l = ax[0].get_legend_handles_labels()
-    plt.legend(legend, ncol=len(legend), loc="upper center",
-                bbox_to_anchor=(0.5, 1.3))
-    plt.tight_layout()
+    plt.legend(legend, ncol=len(legend), loc="upper center",)
+                # bbox_to_anchor=(0.5, 1.5))
+    plt.tight_layout(pad=0.0)
     plt.show()
 
 

@@ -3,6 +3,7 @@ from collections import deque
 import numpy as np
 import scipy.signal
 import scipy.stats
+import matplotlib
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
 
@@ -267,13 +268,16 @@ def _present_benchmark_general(ax: plt.Axes, results: Output):
 
 @presentation(ex_uia, ex_unsw, ex_cwru)
 def present_benchmarks(all_results: list[Output]):
-    fig, ax = plt.subplots(nrows=len(all_results))
+    matplotlib.rcParams.update({"font.size": 6})
+    fig, ax = plt.subplots(nrows=len(all_results), figsize=(3.5, 3.0))
     for i, results in enumerate(all_results):
         _present_benchmark_general(ax[i], results)
-        ax[i].set_ylabel(f"True positive rate\n({results.data_name})")
+        ax[i].set_ylabel(f"TPR\n{results.data_name}")
         ax[i].grid(which="both")
+        ax[i].set_yticks([0.0, 0.5, 1.0])
     ax[-1].set_xlabel("Detections")
-    ax[0].legend(ncol=3, bbox_to_anchor=(0.5, 1.6), loc="upper center")
+    ax[0].legend(ncol=4, bbox_to_anchor=(0.5, 2.0), loc="upper center")
+    plt.tight_layout()
     plt.show()
 
 
@@ -421,12 +425,25 @@ def pr_irfs_uia(results):
 
     dotsize = 5
 
+    rpm = 1000
+    fs = 51200
+    revs_to_time = 60/rpm
+    revs_min = 1.0
+    revs_max = 12.0
+
+    matplotlib.rcParams.update({"font.size": 6})
+    plt.figure(figsize=(3.5, 2.5))
+
+
     ax1 = plt.subplot(4, 1, 1)
-    ax1.plot(results["signal"].x, results["signal"].y, c="k", lw=0.5)
-    ax1.set_ylabel("Signal")
+    ax1.plot(results["signal"].x*revs_to_time, results["signal"].y, c="k", lw=0.5)
+    ax1.set_ylabel("Signal\n"+r"$\bar{y}[n]$")
     ax2 = plt.subplot(4, 1, 2)
-    ax2.plot(results["resid"].x, results["resid"].y, c="k", lw=0.5)
-    ax2.set_ylabel("Residual")
+    ax2.plot(results["resid"].x*revs_to_time, results["resid"].y, c="k", lw=0.5)
+    ax2.set_ylabel("Residual\n"+r"$\hat{\bar{x}}[n]$")
+    ax2.set_xlabel("Time (s)")
+    ax2.set_xlim(revs_min*revs_to_time, revs_max*revs_to_time)
+    ax1.sharex(ax2)
 
     mf = np.correlate(results["resid"].y,
                       results["irfs"]["sigest"],
@@ -441,26 +458,24 @@ def pr_irfs_uia(results):
     # ax3.axhline(results["irfs"]["threshold"], c="k", ls="--", label="Threshold")
     ax3.scatter(results["irfs"]["eosp"], results["irfs"]["magnitude"],
                   c="lightsteelblue", s=dotsize, label="Detected events")
-    ax3.set_ylabel("IRFS-filtered")
+    ax3.set_ylabel("Test\nstatistic\n"+r"$q^{(i)}[n]$")
     ax3.set_xlabel("Revs")
-    ax3.set_xlim(1, 12)
+    ax3.set_xlim(revs_min, revs_max)
     # ax3.legend()
-
-    ax1.sharex(ax3)
-    ax2.sharex(ax3)
 
     ax4 = plt.subplot(4, 2, 7)
     ordf = results["irfs"]["ordf"]
     eosp = results["irfs"]["eosp"]
     ordx = np.arange(0, 10, 0.01)
     evsp = evt.event_spectrum(ordx, eosp)
-    ax4.axvline(ordf, c="lightsteelblue", lw=5, label="Fault order")
+    ax4.axvline(ordf, c="lightsteelblue", lw=3, label="Fault order "+r"$\hat{O}^{(i)}_f$")
     ax4.plot(ordx, abs(evsp), c="k", lw=0.5) 
     # ax4.axhline(len(eosp), ls="-", c="gray", label="#Detected events")
     ax4.set_xlim(ordx[0], ordx[-1])
-    ax4.set_ylabel(f"Event spectrum\nmagnitude")
+    ax4.set_ylabel(f"Event\nspectrum\n"+r"$|\Psi^{(i)}(\theta)|$")
     ax4.set_xlabel("Order [X]")
-    # ax4.legend()
+    ax4.annotate(r"$\hat{O}^{(i)}_f$", (ordf, 130))
+    # ax4.legend(loc="upper center")
     
     ax5 = plt.subplot(4, 2, 8)
     ordf = results["irfs"]["ordf"]
@@ -470,14 +485,17 @@ def pr_irfs_uia(results):
     z = evt.map_circle(ordf, eosp)
     n = evt.period_number(ordf, eosp)
     pdf = scipy.stats.vonmises.pdf(zpdf, kappa, loc=mu)
-    ax_pdf = ax5.twinx()
-    ax5.scatter(z, n, label="Transformed EOSPs", c="lightsteelblue", s=dotsize)
-    ax_pdf.plot(zpdf, pdf, label="Certainty metric", c="k")
-    ax_pdf.set_ylabel("Certainty metric")
-    ax5.set_ylabel(f"#Period")
+    # ax_pdf = ax5.twinx()
+    # ax_pdf = ax5
+    # ax5.scatter(z, n, label="Transformed EOSPs", c="lightsteelblue", s=dotsize)
+    ax5.hist(z, density=True, color="lightsteelblue", bins=20)
+    ax5.plot(zpdf, pdf, label="Certainty", c="k")
+    ax5.set_ylabel("Certainty\n"+r"$u^{(i)}_m$")
+    ax5.set_xlabel("Fault offset")
+    # ax5.set_ylabel(f"#Period")
     ax5.set_xticks([0, np.pi/2, np.pi, 3/2*np.pi, 2*np.pi],
                         [r"$0$", r"$\frac{\pi}{2}$", r"$\pi$", r"$\frac{3\pi}{2}$", r"$2\pi$"])
     ax5.set_xlim(0, 2*np.pi)
 
-    plt.tight_layout()
+    plt.tight_layout(pad=.5, h_pad=0.0)
     plt.show()
