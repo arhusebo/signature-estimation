@@ -272,10 +272,11 @@ def present_benchmarks(all_results: list[Output]):
     fig, ax = plt.subplots(nrows=len(all_results), figsize=(3.5, 3.0))
     for i, results in enumerate(all_results):
         _present_benchmark_general(ax[i], results)
-        ax[i].set_ylabel(f"TPR\n{results.data_name}")
+        ax[i].set_ylabel(results.data_name)
         ax[i].grid(which="both")
         ax[i].set_yticks([0.0, 0.5, 1.0])
     ax[-1].set_xlabel("Detections")
+    ax[i//2].set_ylabel("True positive rate\n"+ax[i//2].get_ylabel())
     ax[0].legend(ncol=4, bbox_to_anchor=(0.5, 2.0), loc="upper center")
     plt.tight_layout()
     plt.show()

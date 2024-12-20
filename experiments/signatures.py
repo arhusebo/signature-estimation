@@ -178,18 +178,19 @@ def cwru2():
 
 
 @presentation(uia1, uia2, unsw1, unsw2, cwru1, cwru2)
-def present_signatures(list_results: list[tuple[algorithms.IRFSResult, float, float]]):
+def present_signatures(list_results: list[tuple[algorithms.IRFSIteration, float, float]]):
     n_cols = 3
-    fig, ax = plt.subplots(2, 3)
+    matplotlib.rcParams.update({"font.size": 6})
+    fig, ax = plt.subplots(2, 3, figsize=(3.5, 2.0))
     for i, results in enumerate(list_results):
         irfs_result, fs, rpm = results
         row = i//n_cols
         col = i%n_cols
         axc = ax[row][col] # current axes
         revs = np.arange(len(irfs_result["sigest"]))*rpm/60/fs
-        axc.plot(revs, irfs_result["sigest"], c="k")
+        axc.plot(revs, irfs_result["sigest"], c="k", lw=0.5)
         axc.set_yticks([])
-        axc.annotate(ascii_lowercase[i], (.8, .7), xycoords="axes fraction")
+        axc.annotate(ascii_lowercase[i], (.8, .8), xycoords="axes fraction")
         if row==1: axc.set_xlabel("Revs")
 
     plt.tight_layout() 
