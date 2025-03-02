@@ -278,7 +278,67 @@ def unsw():
         return list(executor.map(ex_unsw, ex_args))
 
 
+def ex_cwru(process_kwargs):
+    dl = process_kwargs["dl"]
+    model = process_kwargs["model"]
+    signal_id = process_kwargs["id"]
+    ordc = process_kwargs["ordc"]
+    rpm = process_kwargs["rpm"]
+    fs = dl.info["fs"]
+
+    mf = dl[signal_id]
+    signalt = mf.vib
+    residt = model.residuals(signalt)
+
+    signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
+    resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
+    kwargs = {
+        "data_name": "UNSW",
+        "sigsize": 400,
+        "sigshift": -150,
+        "signal": signal,
+        "resid": resid,
+        "ordc": ordc,
+        "medfiltsize": 100,
+        "sknperseg": 256,
+    }
+    return benchmark_experiment(**kwargs)
+
+
+@experiment(output_path)
+def cwru():
+    from data import cwru
+    from data import cwru_path
+    dl = cwru.CWRUDataLoader(cwru_path)
+
+    mh = dl["100"]
+    model = sig.ARModel.from_signal(mh.vib[:10000], 75)
+    
+    ex_args = []
+    for dl_entry in dl.info["data"]:
+        match cwru.fault(dl_entry["name"])[0]:
+            # case cwru.Diagnostics.INNER:
+            #     ordc = ...
+            case cwru.Diagnostics.OUTER:
+                ordc = 5.4152
+            case _:
+                continue
+        
+        ex_args.append({
+            "id": dl_entry["id"],
+            "model": model,
+            "dl": dl,
+            "ordc": ordc,
+            "rpm": dl_entry["rpm"],
+        })
+    
+    with ProcessPoolExecutor() as executor:
+        return list(executor.map(ex_cwru, ex_args))
+
+
+
 def present_best(list_results: list[Output], n: int):
+    n = min(len(list_results), n)
     scores = []
     for results in list_results:
         mag = results["method_outputs"][0]["magnitudes"]
@@ -323,3 +383,8 @@ def present_uia(list_results: list[Output]):
 @presentation(unsw)
 def present_unsw(list_results: list[Output]):
     present_best(list_results, 6)
+
+
+@presentation(cwru)
+def present_cwru(list_results: list[Output]):
+    present_best(list_results, 4)
