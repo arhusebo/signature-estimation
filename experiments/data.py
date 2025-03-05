@@ -1,8 +1,9 @@
 import numpy as np
 import scipy.signal
 import scipy.stats
+import matplotlib
 import matplotlib.pyplot as plt
-from typing import TypedDict
+from typing import TypedDict, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from collections import deque
 
@@ -103,33 +104,26 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
     
     irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, ordc, ordmin, ordmax, weightfunc=irfs_weight)
     
-    print("IRFS done.")
-
     # MED method. Signal is filtered using filter obtained by MED.
     med_filt = algorithms.med_filter(signal, medfiltsize, "impulse")
     med_ndets, med_mags = detect_and_sort(med_filt, ordc, ordmin, ordmax)
-    print("MED done.")
 
     # AR-MED method. Residuals are filtered using filter obtained by AR-MED.
     armed_filt = algorithms.med_filter(resid, medfiltsize, "impulse")
     armed_ndets, armed_mags = detect_and_sort(armed_filt, ordc, ordmin, ordmax)
-    print("AR-MED done.")
 
     # SK method. Signal is filtered using filter maximising SK.
     sk_filt = algorithms.skfilt(signal, sknperseg)
     sk_ndets, sk_mags = detect_and_sort(sk_filt, ordc, ordmin, ordmax)
-    print("SK done.")
 
     # AR-SK method. Residuals are filtered using filter maximising SK.
     arsk_filt = algorithms.skfilt(resid, sknperseg)
     arsk_ndets, arsk_mags = detect_and_sort(arsk_filt, ordc, ordmin, ordmax)
-    print("AR-SK done.")
 
     # Compound method from
     # https://www.papers.phmsociety.org/index.php/phmconf/article/download/3522/phmc_23_3522
     cm_filt = algorithms.skfilt(armed_filt, sknperseg)
     cm_ndets, cm_mags = detect_and_sort(cm_filt, ordc, ordmin, ordmax)
-    print("Compound method done.")
 
     events_max = ordc*signal.x[-1]
 
@@ -192,7 +186,7 @@ def ex_uia(process_kwargs):
     signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
     resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
     kwargs = {
-        "data_name": "UIA",
+        "data_name": str(file_path.parts[-2:]),
         "sigsize": 400,
         "sigshift": -150,
         "signal": signal,
@@ -245,7 +239,7 @@ def ex_unsw(process_kwargs):
     signal = sig.Signal.from_uniform_samples(signalt.y, angfhz/fs)
     resid = sig.Signal.from_uniform_samples(residt.y, angfhz/fs)
     kwargs = {
-        "data_name": "UNSW",
+        "data_name": str(file_path.parts[-3:]),
         "sigsize": 200,
         "sigshift": -100,
         "signal": signal,
@@ -293,7 +287,7 @@ def ex_cwru(process_kwargs):
     signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
     resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
     kwargs = {
-        "data_name": "UNSW",
+        "data_name": str(signal_id),
         "sigsize": 400,
         "sigshift": -150,
         "signal": signal,
@@ -302,7 +296,11 @@ def ex_cwru(process_kwargs):
         "medfiltsize": 100,
         "sknperseg": 256,
     }
-    return benchmark_experiment(**kwargs)
+    try:
+        return benchmark_experiment(**kwargs)
+    except:
+        print(f"signal id {signal_id} was not processed successfully")
+        return
 
 
 @experiment(output_path)
@@ -317,9 +315,9 @@ def cwru():
     ex_args = []
     for dl_entry in dl.info["data"]:
         match cwru.fault(dl_entry["name"])[0]:
-            # case cwru.Diagnostics.INNER:
-            #     ordc = ...
-            case cwru.Diagnostics.OUTER:
+            # case cwru.Diagnostics.OUTER:
+            #     ordc = 3.5848
+            case cwru.Diagnostics.INNER:
                 ordc = 5.4152
             case _:
                 continue
@@ -337,54 +335,72 @@ def cwru():
 
 
 
-def present_best(list_results: list[Output], n: int):
-    n = min(len(list_results), n)
-    scores = []
-    for results in list_results:
-        mag = results["method_outputs"][0]["magnitudes"]
-        det = results["method_outputs"][0]["detections"]
-        scores.append(sum(mag/det))
+def present_results(list_results: list[Output], n: int | None = None,
+                    include_idx: list[int] | None = None,
+                    include_names: list[str] | None = None, show_names=False):
+    list_results = list(filter(lambda r: r is not None, list_results))
+    if include_names:
+        results_to_show = list(filter(lambda r: r["data_name"] in include_names, list_results))
+    elif include_idx:
+        results_to_show = np.take(list_results, include_idx)
+    else:
+        results_to_show = list_results
     
-    include_min_score = np.sort(scores)[-n]
-    results_to_show = list(filter(
-        lambda x: x[1] >= include_min_score,
-        zip(list_results, scores)))
+    if n:
+        n = min(len(results_to_show), n)
+    else:
+        n = len(results_to_show)
 
-    nrows = len(results_to_show)//2
-    ncols = 2
+    nrows = len(results_to_show)
 
-    fig, ax = plt.subplots(nrows=nrows, ncols=ncols,
-                           sharey=True, sharex=True,)
-                           #figsize=(3.5, 6.0))
-    for i, (results, score) in enumerate(results_to_show):
-        row = i//2
-        col = i%2
+    matplotlib.rcParams.update({"font.size": 6})
+    fig, ax = plt.subplots(nrows=nrows, ncols=2, sharey=False, sharex='col',
+                           gridspec_kw={"width_ratios":[3, 2]},
+                           figsize=(3.5, 2.5))
+    for i, results in enumerate(results_to_show):
 
         for method_output in results["method_outputs"]:
             frac = method_output["magnitudes"]/method_output["detections"]
-            ax[row][col].plot(method_output["detections"], frac, label=method_output["name"])
-        ax[row][col].axvline(results["events_max"], label="Max events", ls="--", c="k")
-        if row == nrows-1:
-            ax[row][col].set_xlabel("Detections")
-        if col == 0:
-            ax[row][col].set_ylabel("True\npositive rate")
+            ax[i][0].plot(method_output["detections"], frac, label=method_output["name"])
+        ax[i][0].axvline(results["events_max"], label="Max events", ls="--", c="k")
+        if i == nrows-1:
+            ax[i][0].set_xlabel("Detections")
+        
+        ax[i][0].set_ylabel("True\npositive rate"
+                            +(f"\n{results["data_name"]}" if show_names else ""))
+        # ax[i][1].yaxis.set_label_position("right")
 
-        ax[row, col].grid(which="both")
-    h, l = ax[-1][-1].get_legend_handles_labels()
+        ax[i, 0].grid(which="both")
+
+
+        ax[i, 1].plot(results["irfs_result"]["sigest"], c="k")
+        ax[i][1].set_ylabel("Signature")
+        ax[i][1].set_yticks([])
+        # ax[-1][1].set_xlabel("Revs")
+        ax[0][1].set_xticks([])
+
+    h, l = ax[0][0].get_legend_handles_labels()
     plt.figlegend(h, l, ncols=4, loc="upper center")
+    plt.tight_layout(rect=(0, 0, 1, 0.85))#pad=.5, h_pad=1.5)
     plt.show()
 
 
 @presentation(uia)
 def present_uia(list_results: list[Output]):
-    present_best(list_results, 4)
+    present_results(list_results, include_idx=[2, 3, 4])
 
 
 @presentation(unsw)
 def present_unsw(list_results: list[Output]):
-    present_best(list_results, 6)
+    present_results(list_results, include_idx=[11, 12, 13])
 
 
 @presentation(cwru)
 def present_cwru(list_results: list[Output]):
-    present_best(list_results, 4)
+    present_results(list_results, include_names=["175", "176", "215"])
+
+
+@presentation(uia, unsw, cwru)
+def present_all_labeled(list_results: Sequence[Sequence[Output]]):
+    for list_results_ in list_results:
+        present_results(list_results_, show_names=True)
