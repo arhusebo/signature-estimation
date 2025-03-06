@@ -11,9 +11,16 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 from faultevent.signal import Signal
+from faultevent.event import event_spectrum
 import algorithms
 
 from simsim import experiment, presentation
+
+
+
+OUTPUT_PATH = "results/synth"
+MC_ITERATIONS = 30
+
 
 
 class FaultDescriptor(TypedDict):
@@ -51,49 +58,64 @@ def avg_fault_period(residual: ResidualDescriptor,
     return (residual["sample_frequency"]
             /residual["shaft_frequency"])/residual["faults"][fault_index]["ord"]
 
-output_path = "results/synth"
-
-MC_ITERATIONS = 30
 
 #common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
-common_anomaly_signature = lambda n: (n>=0)*np.sinc(n/2+1)
-def common_fault_signature(n):
+DEFAULT_ANOMALY_SIGNATURE = lambda n: (n>=0)*np.sinc(n/2+1)
+def DEFAULT_FAULT_SIGNATURE(n):
     return (n>=0)*np.sinc(n/8+1)
 
-common_residual: ResidualDescriptor = {
+COMMON_RESIDUAL: ResidualDescriptor = {
     "length": 100000,
     "sample_frequency": 51200,
     "shaft_frequency": 1000/60,
     "faults": [
         {
             "ord": 5.0,
-            "signature": common_fault_signature,
+            "signature": DEFAULT_FAULT_SIGNATURE,
             "std": 0.01,
         }
     ]
 }
 
 
-def sigtilde(signat, sigloc, n):
+def sigtilde(signat: Callable[[int], float], sigloc: Sequence[int], n: int):
+    """Samples a train of signatures given signature function 'signat'
+    evaluated at 0, 1, ..., 'n' with signature offsets 'sigloc'."""
     return np.sum([signat(np.arange(n)-n0) for n0 in sigloc], axis=0)
 
 
 def generate_resid(residual: ResidualDescriptor, seed=0):
+    """Generates a residual signal according to the provided
+    ResidualDescriptor. Always generates the same result unless a
+    different value of 'seed' is used.
+    
+    Returns a dictionary containing the signal, event
+    labels and EOSPs.
+    """
     rng = np.random.default_rng(seed)
     resid = np.zeros((residual["length"]), dtype=float)
+    eosp_ = []
+    elbl_ = []
 
     # Generate fault signatures
-    for fault in residual["faults"]:
+    for i, fault in enumerate(residual["faults"]):
         df = (residual["sample_frequency"]
               /residual["shaft_frequency"])/fault["ord"]
         eosp = np.arange(0, residual["length"], df, dtype=float)
         eosp += rng.standard_normal(len(eosp))*fault["std"]
         resid += sigtilde(fault["signature"], eosp, residual["length"])
 
+        eosp_.append(eosp)
+        elbl_.append(np.ones_like(eosp, dtype=int)+i)
+
     # Generate anomaly signatures
     if anomaly := residual.get("anomaly", None):
         eosp = rng.uniform(0, residual["length"], anomaly["amount"])
         resid += sigtilde(anomaly["signature"], eosp, residual["length"])
+
+        eosp_.append(eosp)
+        elbl_.append(np.zeros_like(eosp, dtype=int))
+    
     
     sigpow = np.var(resid) # total signatures power
 
@@ -134,10 +156,19 @@ def generate_resid(residual: ResidualDescriptor, seed=0):
     # Instantiate and return signal object
     dx = 1/(residual["sample_frequency"]/residual["shaft_frequency"])
     out = Signal.from_uniform_samples(resid, dx)
-    return out
+    event_shaft_positions = np.concatenate(eosp_)*dx
+    event_labels = np.concatenate(elbl_)
+    return {
+        "signal": out,
+        "eosp": event_shaft_positions,
+        "event_labels": event_labels,
+    }
 
 
-def estimate_signat(resid: Signal, indices, siglen, shift):
+def estimate_signat(resid: Signal, indices: Sequence[int],
+                    siglen: int, shift: int) -> Sequence[float]:
+    """Estimates the signature from the residual signal, signal indices,
+    a desired signature length and a shift."""
     n_samples = 0
     running_sum = np.zeros((siglen,))
     for idx in indices:
@@ -148,52 +179,29 @@ def estimate_signat(resid: Signal, indices, siglen, shift):
     return sig
 
 
-def nmse_shift(sigest, sigtruefunc, shiftmax=100):
-    sigest_ = sigest.copy()
-    sigest_ /= np.linalg.norm(sigest_)
-    siglen = len(sigest_)
-    sigtrue = sigtruefunc(np.arange(siglen))
-    sigtrue /= np.linalg.norm(sigtrue)
-
-    if shiftmax>0:
-        sigestpad = np.pad(sigest_, shiftmax)
-        # Since both signature estimate and true signature are normalised,
-        # it is not neccesary to normalise the MSE estimate, i.e. by dividing
-        # by the true signal energy.
-        nmse = np.sum([(sigestpad[i:i+siglen] - sigtrue)**2 for i in range(2*shiftmax)], axis=-1)
-        n = np.arange(2*shiftmax)-shiftmax
-    else:
-        nmse = np.sum((sigest - sigtrue)[np.newaxis,:]**2, axis=-1)
-        n = np.zeros((1,))
-
-    return nmse, n
-
-
-def estimate_nmse(sigest, sigtruefunc, shiftmax=100):
-    nmse, n = nmse_shift(sigest, sigtruefunc, shiftmax)
-    idxmin = np.argmin(nmse)
-    return nmse[idxmin], n[idxmin]
+class MethodResults(TypedDict):
+    sigest: Sequence[float]
+    eosp: Sequence[float]
 
 
 class BenchmarkResults(TypedDict):
-    method: str
-    rmse: float
-    sigest: npt.ArrayLike
-    sigshift: int
+    methods: dict[str, MethodResults]
+    eosp: Sequence[float]
+    event_labels: Sequence[int]
 
 
-def rmse_benchmark(residual: ResidualDescriptor,
-                   fault_index: int = 0,
-                   seed: int = 0,
-                   sigestlen: int = 400,
-                   sigestshift: int = -150,
-                   medfiltsize: int = 100,) -> Sequence[BenchmarkResults]:
+def benchmark(residual: ResidualDescriptor,
+              fault_index: int = 0,
+              seed: int = 0,
+              sigestlen: int = 400,
+              sigestshift: int = -150,
+              medfiltsize: int = 100,) -> BenchmarkResults:
 
-    resid=generate_resid(residual, seed=seed)
+    genres=generate_resid(residual, seed=seed)
+    resid = genres["signal"]
     fault = residual["faults"][fault_index]
     avg_event_period = avg_fault_period(residual, fault_index)
     ordc = fault["ord"]
-    sigfunc = fault["signature"]
     
     ordc = ordc
     ordmin = ordc-.5
@@ -224,32 +232,46 @@ def rmse_benchmark(residual: ResidualDescriptor,
     skpeaks, _ = scipy.signal.find_peaks(skenv, distance=avg_event_period/2)
     sigest_sk = estimate_signat(resid, skpeaks, sigestlen, sigestshift)
 
-    rmse_irfs, shift_irfs = estimate_nmse(irfs_result["sigest"], sigfunc, 1000)
-    rmse_med, shift_med = estimate_nmse(sigest_med, sigfunc, 1000)
-    rmse_sk, shift_sk = estimate_nmse(sigest_sk, sigfunc, 1000)
-
-    results: Sequence[BenchmarkResults] = [
-        {
-            "method": "IRFS",
-            "rmse": rmse_irfs,
-            "sigest": irfs_result["sigest"],
-            "sigshift": shift_irfs,
+    results: BenchmarkResults = {
+        "eosp": genres["eosp"],
+        "event_labels": genres["event_labels"],
+        "methods": {
+            "irfs": {"sigest": irfs_result["sigest"], "eosp": irfs_result["eosp"]},
+            "med": {"sigest": sigest_med, "eosp": medout.x[medpeaks]},
+            "sk": {"sigest": sigest_sk, "eosp": skout.x[skpeaks]},
         },
-        {
-            "method": "MED",
-            "rmse": rmse_med,
-            "sigest": sigest_med,
-            "sigshift": shift_med,
-        },
-        {
-            "method": "SK",
-            "rmse": rmse_sk,
-            "sigest": sigest_sk,
-            "sigshift": shift_sk,
-        }
-    ]
+    }
 
     return results
+
+
+# --- NMSE experiments --------------------------------------------------------
+
+def nmse_shift(sigest, sigtruefunc, shiftmax=100):
+    sigest_ = sigest.copy()
+    sigest_ /= np.linalg.norm(sigest_)
+    siglen = len(sigest_)
+    sigtrue = sigtruefunc(np.arange(siglen))
+    sigtrue /= np.linalg.norm(sigtrue)
+
+    if shiftmax>0:
+        sigestpad = np.pad(sigest_, shiftmax)
+        # Since both signature estimate and true signature are normalised,
+        # it is not neccesary to normalise the MSE estimate, i.e. by dividing
+        # by the true signal energy.
+        nmse = np.sum([(sigestpad[i:i+siglen] - sigtrue)**2 for i in range(2*shiftmax)], axis=-1)
+        n = np.arange(2*shiftmax)-shiftmax
+    else:
+        nmse = np.sum((sigest - sigtrue)[np.newaxis,:]**2, axis=-1)
+        n = np.zeros((1,))
+
+    return nmse, n
+
+
+def estimate_nmse(sigest, sigtruefunc, shiftmax=100):
+    nmse, n = nmse_shift(sigest, sigtruefunc, shiftmax)
+    idxmin = np.argmin(nmse)
+    return nmse[idxmin], n[idxmin]
 
 
 def common_snr_experiment(snr, seed, n_anomalous):
@@ -257,16 +279,18 @@ def common_snr_experiment(snr, seed, n_anomalous):
     experiments using multiprocessing and therefore needs to be defined
     on module-level."""
     
-    residual: ResidualDescriptor = common_residual.copy()
+    residual: ResidualDescriptor = COMMON_RESIDUAL.copy()
     residual["snr"] = snr
     residual["anomaly"] = {
         "amount": n_anomalous,
-        "signature": common_anomaly_signature,
+        "signature": DEFAULT_ANOMALY_SIGNATURE,
     }
-
-    results = rmse_benchmark(residual, seed=seed)
+    sigfunc = residual["faults"][0]["signature"]
+    results = benchmark(residual, seed=seed)
+    nmse = [estimate_nmse(mr["sigest"], sigfunc, 1000)[0]
+            for mr in results["methods"].values()]
     
-    return [r["rmse"] for r in results]
+    return nmse
 
 
 def snr_monte_carlo(n_anomalous=0, mc_iterations=10):
@@ -286,178 +310,16 @@ def snr_monte_carlo(n_anomalous=0, mc_iterations=10):
     return snr_to_eval, rmse
 
 
-@experiment(output_path, json=True)
+@experiment(OUTPUT_PATH, json=True)
 def ex_snr():
     """Synthetic data experiment A - No anomlaous events present"""
     return snr_monte_carlo(n_anomalous=0, mc_iterations=MC_ITERATIONS)
 
 
-@experiment(output_path, json=True)
+@experiment(OUTPUT_PATH, json=True)
 def ex_snr_anomalous():
     """Synthetic data experiment B - Anomalous events present"""
     return snr_monte_carlo(n_anomalous=100, mc_iterations=MC_ITERATIONS)
-
-
-def interference_experiment(interference: InterferenceDescriptor, seed=0):
-    """General random interference experiment. This function is called
-    by monte-carlo experiments using multiprocessing and therefore needs
-    to be defined on module-level."""
-
-    residual: ResidualDescriptor = common_residual.copy()
-    residual["snr"] = 1.0
-    residual["interference"] = interference
-
-    results = rmse_benchmark(residual, seed=seed)
-
-    return [r["rmse"] for r in results]
-
-
-@experiment(output_path, json=True)
-def ex_sir():
-    """For a set of central frequencies, runs the random interference
-    experiment multiple times using multiprocessing."""
-    
-    # sir = np.linspace(5, 0.2, 10).tolist()
-    sir_max = 5.0
-    sir_min = 0.2
-    sir = np.logspace(np.log10(sir_max), np.log10(sir_min), 5).tolist()
-    interf_cfreq = 16e3
-    args = [] 
-    for sir_ in sir:
-        for seed in range(MC_ITERATIONS):
-            interference: InterferenceDescriptor = {
-                "sir": sir_,
-                "central_frequency": interf_cfreq,
-                "bandwidth": 1e3,
-            }
-            args.append((interference, seed))
-
-    with Pool() as p:
-        rmse = p.starmap(interference_experiment, args)
-    
-    return sir, interf_cfreq, rmse
-
-
-@experiment(output_path, json=True)
-def ex_sir_frequency():
-    """For a fixed signal-to-interference ratio, runs a
-    "random interference" experiment for varying central frequency."""
-    
-    sir = 1.0
-    interf_cfreq = np.linspace(1e3, 22e3, 10).tolist()
-    args = [] 
-    for cfreq in interf_cfreq:
-        for seed in range(MC_ITERATIONS):
-            interference: InterferenceDescriptor = {
-                "sir": sir,
-                "central_frequency": cfreq,
-                "bandwidth": 1e3,
-            }
-            args.append((interference, seed))
-
-    with Pool() as p:
-        rmse = p.starmap(interference_experiment, args)
-    
-    return {
-        "sir": sir,
-        "interf_cfreq": interf_cfreq,
-        "rmse": rmse,
-    }
-
-
-def diagnosis_benchmark(residual: ResidualDescriptor,
-                        faults: algorithms.fault_search,
-                        seed: int = 0,
-                        medfiltsize=100):
-    
-    resid = generate_resid(residual, seed=seed)
-    
-    search_intervals = faults.values()
-    score_med_results = algorithms.score_med(resid, medfiltsize, search_intervals)
-    residf = score_med_results["filtered"]
-
-    # IRFS method, 1st iteration
-    eosp = algorithms.enedetloc(residf, search_intervals=search_intervals)
-    irfs_diagnosis = algorithms.diagnose_fault(eosp, faults)
-    med_diagnosis = algorithms.diagnose_fault_simple(
-        signal=algorithms.med_filter(resid, medfiltsize, "impulse"),
-        faults=faults,)
-    sk_diagnosis = algorithms.diagnose_fault_simple(
-        signal=algorithms.skfilt(resid),
-        faults=faults,)
-    return [
-        {
-            "name": "IRFS",
-            "diagnosis": irfs_diagnosis,
-        },
-        {
-            "name": "MED",
-            "diagnosis": med_diagnosis,
-        },
-        {
-            "name": "SK",
-            "diagnosis": sk_diagnosis,
-        }
-    ]
-
-
-@experiment(output_path, json=True)
-def ex_diagnosis():
-    """Performs a diagnosis benchmark for multiple signal realizations
-    of varying levels of signal-to-noise-and-interference ratio (SNIR)"""
-    
-    faults: list[FaultDescriptor] = [
-        {
-            "name": "inner race",
-            "ord": 5.4152,
-            "signature": common_fault_signature,
-            "std": 0.01,
-        },
-        {
-            "name": "outer race",
-            "ord": 3.5848,
-            "signature": common_fault_signature,
-            "std": 0.01
-        }
-    ]
-
-    faults_to_consider: algorithms.fault_search = {
-        fault["name"]: tuple(fault["ord"]+d for d in [-0.1, 0.1]) for fault in faults
-    }
-
-    snir_to_eval = np.logspace(-2, 0, 10).tolist()
-    args = []
-    for fault in faults:
-        for snir in snir_to_eval:
-            for seed in range(MC_ITERATIONS):
-                residual = common_residual.copy()
-                residual["snr"] = 1.0
-                residual["interference"] = {
-                    "sir": 5.0,
-                    "bandwidth": 1e3,
-                    "central_frequency": 16e3,
-                }
-                residual["faults"] = [fault]
-                residual["snir"] = snir
-                args.append((residual, faults_to_consider, seed))
-    
-    with Pool() as p:
-        diagnosis_results = p.starmap(diagnosis_benchmark, args)
-
-    # am I having a brain malfunction?
-    results = [] 
-    idx_results = 0
-    for fault in faults:
-        for snir in snir_to_eval:
-            for seed in range(MC_ITERATIONS):
-                results.append({
-                    "fault": fault["name"],
-                    "snir": snir,
-                    "order": fault["ord"],
-                    "methods": diagnosis_results[idx_results]
-                })
-                idx_results += 1
-    return results
 
 
 @presentation(ex_snr, ex_snr_anomalous)
@@ -487,6 +349,77 @@ def pr_snr(results: Sequence[npt.ArrayLike, tuple]):
     plt.show()
 
 
+
+def interference_experiment(interference: InterferenceDescriptor, seed=0):
+    """General random interference experiment. This function is called
+    by monte-carlo experiments using multiprocessing and therefore needs
+    to be defined on module-level."""
+
+    residual: ResidualDescriptor = COMMON_RESIDUAL.copy()
+    residual["snr"] = 1.0
+    residual["interference"] = interference
+
+    results = benchmark(residual, seed=seed)
+    sigfunc = residual["faults"][0]["signature"]
+    nmse = [estimate_nmse(mr["sigest"], sigfunc, 1000)[0]
+            for mr in results["methods"].values()]
+
+    return nmse
+
+
+@experiment(OUTPUT_PATH, json=True)
+def ex_sir():
+    """For a set of central frequencies, runs the random interference
+    experiment multiple times using multiprocessing."""
+    
+    # sir = np.linspace(5, 0.2, 10).tolist()
+    sir_max = 5.0
+    sir_min = 0.2
+    sir = np.logspace(np.log10(sir_max), np.log10(sir_min), 5).tolist()
+    interf_cfreq = 16e3
+    args = [] 
+    for sir_ in sir:
+        for seed in range(MC_ITERATIONS):
+            interference: InterferenceDescriptor = {
+                "sir": sir_,
+                "central_frequency": interf_cfreq,
+                "bandwidth": 1e3,
+            }
+            args.append((interference, seed))
+
+    with Pool() as p:
+        rmse = p.starmap(interference_experiment, args)
+    
+    return sir, interf_cfreq, rmse
+
+
+@experiment(OUTPUT_PATH, json=True)
+def ex_sir_frequency():
+    """For a fixed signal-to-interference ratio, runs a
+    "random interference" experiment for varying central frequency."""
+    
+    sir = 1.0
+    interf_cfreq = np.linspace(1e3, 22e3, 10).tolist()
+    args = [] 
+    for cfreq in interf_cfreq:
+        for seed in range(MC_ITERATIONS):
+            interference: InterferenceDescriptor = {
+                "sir": sir,
+                "central_frequency": cfreq,
+                "bandwidth": 1e3,
+            }
+            args.append((interference, seed))
+
+    with Pool() as p:
+        rmse = p.starmap(interference_experiment, args)
+    
+    return {
+        "sir": sir,
+        "interf_cfreq": interf_cfreq,
+        "rmse": rmse,
+    }
+
+
 @presentation(ex_sir)
 def pr_sir_basic(result):
     
@@ -508,7 +441,7 @@ def pr_sir_basic(result):
     plt.grid()
     # plt.yticks([0.0, 0.25, 0.5, 0.75, 1.0])
     plt.yticks([0.0, 0.5, 1.0])
-    plt.ylim(0, 1.25)
+    # plt.ylim(0, 1.25)
     plt.xticks(np.round(sir, 2))
 
     plt.xlabel("SIR (dB)")
@@ -516,7 +449,8 @@ def pr_sir_basic(result):
     #plt.gca().invert_xaxis()
 
     #h, l = ax[0].get_legend_handles_labels()
-    plt.legend(legend, ncol=len(legend), loc="upper center",)
+    plt.legend(legend)
+    # plt.legend(legend, ncol=len(legend), loc="upper center",)
                 # bbox_to_anchor=(0.5, 1.5))
     plt.tight_layout(pad=0.0)
     plt.show()
@@ -595,6 +529,173 @@ def pr_sir_frequency(result):
     ax.legend(legend)
     plt.tight_layout()
     plt.show()
+
+
+# --- EOSP experiments --------------------------------------------------------
+
+def eosp_metric(ordf: float,
+                eosp_true: Sequence[float],
+                eosp_detected: Sequence[float]) -> float:
+    """Compute a metric quantifying the error of detected EOSPs"""
+    ptru = np.angle(event_spectrum(ordf, eosp_true))#+np.pi
+    pdet = np.angle(event_spectrum(ordf, eosp_detected))#+np.pi
+    pdiff = ptru - pdet
+    xdiff = pdiff/(2*np.pi)/ordf
+    eosp_corrected = eosp_detected - xdiff
+    cdist = [np.min(abs(eosp_true-ec)) for ec in eosp_corrected]
+    mcdist = np.mean(cdist)
+    
+    return mcdist
+
+
+def common_eosp_experiment(snr, seed):
+    residual: ResidualDescriptor = COMMON_RESIDUAL.copy()
+    residual["snr"] = snr
+    results = benchmark(residual, seed=seed)
+    eosp_true = results["eosp"][results["event_labels"]==1]
+    ordf = residual["faults"][0]["ord"]
+
+    metric = [eosp_metric(ordf, eosp_true, mr["eosp"])
+                for mr in results["methods"].values()]
+
+    return metric
+
+
+@experiment(OUTPUT_PATH, json=False)
+def ex_eosp():
+    snr_to_eval = np.logspace(-2, 0, 5).tolist()
+    list_args = []
+    for snr in snr_to_eval:
+        for seed in range(MC_ITERATIONS):
+            args = (snr, seed)
+            list_args.append(args)
+
+    with Pool(4) as p:
+        metric = p.starmap(common_eosp_experiment, list_args)
+    
+    return snr_to_eval, metric
+
+
+@presentation(ex_eosp)
+def pr_eosp(results):
+    snr, metric = results
+
+    metric = np.reshape(metric, (len(snr), -1, 3))
+    snr = 10*np.log10(snr)
+    mean_metric = np.mean(metric, 1)
+    
+    matplotlib.rcParams.update({"font.size": 6})
+    fig, ax = plt.subplots(figsize=(3.5, 1.0))
+    legend = ["IRFS", "MED", "SK"]
+    markers = ["o", "^", "d"]
+    for i in range(mean_metric.shape[-1]):
+        ax.plot(snr, mean_metric[:,i], marker=markers[i])
+    ax.set_xlabel("SNR (dB)")
+    ax.set_ylabel("EOSP error\n(revs)")
+    ax.grid()
+    ax.legend(legend)
+    # ax.legend(legend, ncol=len(legend), loc="upper center",)
+            #   bbox_to_anchor=(0.5, 1.3))
+    plt.tight_layout(pad=0.0)
+    plt.show()
+
+
+
+# --- Diagnosis experiments (unused) ------------------------------------------
+
+def diagnosis_benchmark(residual: ResidualDescriptor,
+                        faults: algorithms.fault_search,
+                        seed: int = 0,
+                        medfiltsize=100):
+    
+    resid = generate_resid(residual, seed=seed)
+    
+    search_intervals = faults.values()
+    score_med_results = algorithms.score_med(resid, medfiltsize, search_intervals)
+    residf = score_med_results["filtered"]
+
+    # IRFS method, 1st iteration
+    eosp = algorithms.enedetloc(residf, search_intervals=search_intervals)
+    irfs_diagnosis = algorithms.diagnose_fault(eosp, faults)
+    med_diagnosis = algorithms.diagnose_fault_simple(
+        signal=algorithms.med_filter(resid, medfiltsize, "impulse"),
+        faults=faults,)
+    sk_diagnosis = algorithms.diagnose_fault_simple(
+        signal=algorithms.skfilt(resid),
+        faults=faults,)
+    return [
+        {
+            "name": "IRFS",
+            "diagnosis": irfs_diagnosis,
+        },
+        {
+            "name": "MED",
+            "diagnosis": med_diagnosis,
+        },
+        {
+            "name": "SK",
+            "diagnosis": sk_diagnosis,
+        }
+    ]
+
+
+@experiment(OUTPUT_PATH, json=True)
+def ex_diagnosis():
+    """Performs a diagnosis benchmark for multiple signal realizations
+    of varying levels of signal-to-noise-and-interference ratio (SNIR)"""
+    
+    faults: list[FaultDescriptor] = [
+        {
+            "name": "inner race",
+            "ord": 5.4152,
+            "signature": DEFAULT_FAULT_SIGNATURE,
+            "std": 0.01,
+        },
+        {
+            "name": "outer race",
+            "ord": 3.5848,
+            "signature": DEFAULT_FAULT_SIGNATURE,
+            "std": 0.01
+        }
+    ]
+
+    faults_to_consider: algorithms.fault_search = {
+        fault["name"]: tuple(fault["ord"]+d for d in [-0.1, 0.1]) for fault in faults
+    }
+
+    snir_to_eval = np.logspace(-2, 0, 10).tolist()
+    args = []
+    for fault in faults:
+        for snir in snir_to_eval:
+            for seed in range(MC_ITERATIONS):
+                residual = COMMON_RESIDUAL.copy()
+                residual["snr"] = 1.0
+                residual["interference"] = {
+                    "sir": 5.0,
+                    "bandwidth": 1e3,
+                    "central_frequency": 16e3,
+                }
+                residual["faults"] = [fault]
+                residual["snir"] = snir
+                args.append((residual, faults_to_consider, seed))
+    
+    with Pool() as p:
+        diagnosis_results = p.starmap(diagnosis_benchmark, args)
+
+    # am I having a brain malfunction?
+    results = [] 
+    idx_results = 0
+    for fault in faults:
+        for snir in snir_to_eval:
+            for seed in range(MC_ITERATIONS):
+                results.append({
+                    "fault": fault["name"],
+                    "snir": snir,
+                    "order": fault["ord"],
+                    "methods": diagnosis_results[idx_results]
+                })
+                idx_results += 1
+    return results
 
 
 @presentation(ex_diagnosis)
