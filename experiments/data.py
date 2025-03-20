@@ -6,7 +6,9 @@ import matplotlib.pyplot as plt
 from typing import TypedDict, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from collections import deque
+import pathlib
 
+import faultevent.data
 import faultevent.signal as sig
 import faultevent.event as evt
 import faultevent.util as utl
@@ -57,7 +59,7 @@ class MethodOutput(TypedDict):
     magnitudes: list[float]
 
 
-class Output(TypedDict):
+class Benchmark(TypedDict):
     data_name: str 
     method_outputs: list[MethodOutput]
     ordc: float
@@ -127,7 +129,7 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
 
     events_max = ordc*signal.x[-1]
 
-    results: Output = {
+    results: Benchmark = {
         "data_name": data_name,
         "ordc": ordc,
         "events_max": events_max,
@@ -170,6 +172,13 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
 
 
 
+class ExperimentResults(TypedDict):
+    ar_model: sig.ARModel
+    dataloader: faultevent.data.DataLoader
+    benchmarks: Sequence[Benchmark]
+
+
+
 def ex_uia(process_kwargs):
     file_path = process_kwargs["file_path"]
     dl = process_kwargs["dl"]
@@ -186,7 +195,7 @@ def ex_uia(process_kwargs):
     signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
     resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
     kwargs = {
-        "data_name": str(file_path.parts[-2:]),
+        "data_name": str(pathlib.Path(*file_path.parts[-2:])),
         "sigsize": 400,
         "sigshift": -150,
         "signal": signal,
@@ -199,7 +208,7 @@ def ex_uia(process_kwargs):
 
 
 @experiment(output_path)
-def uia():
+def uia() -> ExperimentResults:
     from data.uia import UiADataLoader
     from data import uia_path
     dl = UiADataLoader(uia_path)
@@ -218,7 +227,13 @@ def uia():
         })
 
     with ProcessPoolExecutor() as executor:
-        return list(executor.map(ex_uia, ex_args))
+        benchmarks = list(executor.map(ex_uia, ex_args))
+    
+    return {
+        "ar_model": model,
+        "dataloader": dl,
+        "benchmarks": benchmarks,
+    }
 
 
 def ex_unsw(process_kwargs):
@@ -239,7 +254,7 @@ def ex_unsw(process_kwargs):
     signal = sig.Signal.from_uniform_samples(signalt.y, angfhz/fs)
     resid = sig.Signal.from_uniform_samples(residt.y, angfhz/fs)
     kwargs = {
-        "data_name": str(file_path.parts[-3:]),
+        "data_name": str(file_path),
         "sigsize": 200,
         "sigshift": -100,
         "signal": signal,
@@ -252,7 +267,7 @@ def ex_unsw(process_kwargs):
 
 
 @experiment(output_path)
-def unsw():
+def unsw() -> ExperimentResults:
     from data.unsw import UNSWDataLoader
     from data import unsw_path
     dl = UNSWDataLoader(unsw_path)
@@ -267,9 +282,13 @@ def unsw():
             "model": model,
             "dl": dl,
         })
-
-    with ProcessPoolExecutor() as executor:
-        return list(executor.map(ex_unsw, ex_args))
+    with ProcessPoolExecutor(6) as executor:
+        benchmarks = list(executor.map(ex_unsw, ex_args))
+    return {
+        "dataloader": dl,
+        "ar_model": model,
+        "benchmarks": benchmarks,
+    }
 
 
 def ex_cwru(process_kwargs):
@@ -304,7 +323,7 @@ def ex_cwru(process_kwargs):
 
 
 @experiment(output_path)
-def cwru():
+def cwru() -> ExperimentResults:
     from data import cwru
     from data import cwru_path
     dl = cwru.CWRUDataLoader(cwru_path)
@@ -331,20 +350,38 @@ def cwru():
         })
     
     with ProcessPoolExecutor() as executor:
-        return list(executor.map(ex_cwru, ex_args))
+        benchmarks = list(executor.map(ex_cwru, ex_args))
+
+    return {
+        "ar_model": model,
+        "dataloader": dl,
+        "benchmarks": benchmarks,
+    }
 
 
-
-def present_results(list_results: list[Output], n: int | None = None,
-                    include_idx: list[int] | None = None,
-                    include_names: list[str] | None = None, show_names=False):
-    list_results = list(filter(lambda r: r is not None, list_results))
+def select_benchmarks(benchmarks: list[Benchmark],
+                      include_idx: list[int] | None = None,
+                      include_names: list[str] | None = None,):
+    # remove failed benchmarks
+    list_benchmarks = list(filter(lambda r: r is not None, benchmarks))
+    selected = []
     if include_names:
-        results_to_show = list(filter(lambda r: r["data_name"] in include_names, list_results))
+        selected += list(filter(lambda r: r["data_name"] in include_names, list_benchmarks))
+    if include_idx:
+        selected += np.take(list_benchmarks, include_idx).tolist()
+    return selected
+
+def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
+                       include_idx: list[int] | None = None,
+                       include_names: list[str] | None = None, show_names=False,
+                       dx=1.0):
+    list_benchmarks = list(filter(lambda r: r is not None, list_benchmarks))
+    if include_names:
+        results_to_show = list(filter(lambda r: r["data_name"] in include_names, list_benchmarks))
     elif include_idx:
-        results_to_show = np.take(list_results, include_idx)
+        results_to_show = np.take(list_benchmarks, include_idx)
     else:
-        results_to_show = list_results
+        results_to_show = list_benchmarks
     
     if n:
         n = min(len(results_to_show), n)
@@ -372,12 +409,13 @@ def present_results(list_results: list[Output], n: int | None = None,
 
         ax[i, 0].grid(which="both")
 
-
-        ax[i, 1].plot(results["irfs_result"]["sigest"], c="k")
-        ax[i][1].set_ylabel("Signature")
+        sigest = results["irfs_result"]["sigest"]
+        x = np.arange(len(sigest))*dx
+        ax[i, 1].plot(x, sigest, c="k", lw=0.5)
+        ax[i][1].set_ylabel("Signature\nestimate")
         ax[i][1].set_yticks([])
-        # ax[-1][1].set_xlabel("Revs")
-        ax[0][1].set_xticks([])
+        ax[-1][1].set_xlabel("Revs")
+        # ax[0][1].set_xticks([])
 
     h, l = ax[0][0].get_legend_handles_labels()
     plt.figlegend(h, l, ncols=4, loc="upper center")
@@ -386,21 +424,83 @@ def present_results(list_results: list[Output], n: int | None = None,
 
 
 @presentation(uia)
-def present_uia(list_results: list[Output]):
-    present_results(list_results, include_idx=[2, 3, 4])
+def present_uia(results: ExperimentResults):
+    rpm = 1000 # angular speed in rpm
+    fs = 51200 # sample frequency
+    dx = (rpm/60)/fs
+    present_benchmarks(results["benchmarks"], include_idx=[2, 3, 4], dx=dx)
 
 
 @presentation(unsw)
-def present_unsw(list_results: list[Output]):
-    present_results(list_results, include_idx=[11, 12, 13])
+def present_unsw(results: ExperimentResults):
+    shaft_freq = 6
+    sample_freq = 51200
+    dx = shaft_freq/sample_freq
+    present_benchmarks(results["benchmarks"], include_idx=[11, 12, 13], dx=dx)
 
 
 @presentation(cwru)
-def present_cwru(list_results: list[Output]):
-    present_results(list_results, include_names=["175", "176", "215"])
+def present_cwru(results: ExperimentResults):
+    dl = results["dataloader"]
+    fs = dl.info["fs"]
+    rpm = 1750 # approx
+    dx = (rpm/60)/fs
+    present_benchmarks(results["benchmarks"], include_names=["175", "176", "215"], dx=dx)
 
 
 @presentation(uia, unsw, cwru)
-def present_all_labeled(list_results: Sequence[Sequence[Output]]):
-    for list_results_ in list_results:
-        present_results(list_results_, show_names=True)
+def present_all_labeled(list_results: Sequence[ExperimentResults]):
+    for results_ in list_results:
+        present_benchmarks(results_["benchmarks"], show_names=True)
+
+
+def present_stacked_signatures(benchmark: Benchmark,
+                               dl: faultevent.data.DataLoader,
+                               ar_model: sig.ARModel,
+                               idx_eosp: Sequence[int],
+                               siglen: int,
+                               dx=1.0,):
+
+    vib = dl[benchmark["data_name"]].vib
+    rest = ar_model.residuals(vib)
+    res = sig.Signal.from_uniform_samples(rest.y, dx)
+    eosp = benchmark["irfs_result"]["eosp"]
+    x = np.arange(siglen)*res.dx
+
+    eosp_to_plot = eosp[idx_eosp]
+    matplotlib.rcParams.update({"font.size": 6})
+    fig, ax = plt.subplots(len(eosp_to_plot)+1, 1, sharex=True, sharey=False,
+                           figsize=(3.5, 2.5),
+                           gridspec_kw={"height_ratios": [1.0]*len(eosp_to_plot)+[2.0]})
+    for i, eosp_ in enumerate(eosp_to_plot):
+        idx = res.idx_closest(eosp_)
+        reswin = res[idx:idx+siglen]
+        ax[i].plot(x, reswin.y, c="k", lw=0.5)
+        ax[i].set_ylabel("Residual\nwindow")
+        # ax[i].set_ylim(-0.1, 0.1)
+    
+    ax[-1].plot(x, benchmark["irfs_result"]["sigest"], lw=0.5)
+    ax[-1].set_ylabel("Signature\nestimate")
+    ax[-1].set_xlabel("Revs")
+    # ax[-1].set_ylim(-0.1, 0.1)
+
+    plt.tight_layout()
+    plt.show()
+
+
+@presentation(uia)
+def present_uia_stacked(results: ExperimentResults):
+    benchmark = select_benchmarks(results["benchmarks"], include_idx=[2])[0]
+    dx = (1000/60)/51200
+    present_stacked_signatures(benchmark=benchmark, dl=results["dataloader"],
+                               ar_model=results["ar_model"], idx_eosp=range(4, 8),
+                               siglen=400, dx=dx)
+
+
+@presentation(unsw)
+def present_unsw_stacked(results: ExperimentResults):
+    benchmark = select_benchmarks(results["benchmarks"], include_idx=[11])[0]
+    dx = 6/51200
+    present_stacked_signatures(benchmark=benchmark, dl=results["dataloader"],
+                               ar_model=results["ar_model"], idx_eosp=range(4),
+                               siglen=200, dx=dx)
