@@ -20,12 +20,13 @@ class IRFSIteration(TypedDict):
     threshold: float
 
 
-def irfs(data: sig.Signal,
+def irfs(residual: sig.Signal,
          spos1: npt.ArrayLike,
          ordmin: float,
          ordmax: float,
          sigsize: int,
          sigshift: int,
+         vibration: sig.Signal = None,
          hys: float = .01,
          enedet_max_loc_error: int = 10,
          n_iter: int = 10,
@@ -38,7 +39,7 @@ def irfs(data: sig.Signal,
     z1 = evt.map_circle(ordf1, spos1)
     crt1 = scipy.stats.vonmises.pdf(z1, kappa1, loc=mu1)
     idx1 = np.argsort(crt1)[::-1]
-    signat1 = utl.estimate_signature(data,
+    signat1 = utl.estimate_signature(residual,
                                      sigsize,
                                      x=spos1[idx1],
                                      weights=crt1[idx1],
@@ -47,13 +48,13 @@ def irfs(data: sig.Signal,
 
     # ith iteration
     det1 = sig.MatchedFilterEnvelopeDetector(signat1)
-    stat1 = det1.statistic(data)
+    stat1 = det1.statistic(residual)
     norm1 = np.linalg.norm(signat1)
     thr1, _ = utl.best_threshold(stat1, [(ordmin, ordmax)], hysteresis=hys,
                               n=threshold_trials)/norm1
     det_list = [det1]
     for i in range(1, n_iter-1):
-        stat_i = det_list[i-1].statistic(data)
+        stat_i = det_list[i-1].statistic(residual)
         thr_i = thr1*np.linalg.norm(det_list[i-1].h)
         cmp_i = sig.Comparison.from_comparator(stat_i, thr_i, thr_i*hys)
         spos_i, mag_i = np.asarray(sig.matched_filter_location_estimates(cmp_i))
@@ -63,12 +64,19 @@ def irfs(data: sig.Signal,
         z_i = evt.map_circle(ordf_i, spos_i)
         crt_i = scipy.stats.vonmises.pdf(z_i, kappa_i, loc=mu_i)
         idx_sorted = np.argsort(crt_i)[::-1]
-        sig_i = utl.estimate_signature(data,
+        sig_i = utl.estimate_signature(residual,
                                        len(det_list[i-1].h),
                                        x=spos_i[idx_sorted],
                                        weights=crt_i[idx_sorted])
         det_i = sig.MatchedFilterEnvelopeDetector(sig_i)
         det_list.append(det_i)
+
+        vib_sig_i = None
+        if vibration:
+            vib_sig_i = utl.estimate_signature(vibration,
+                                        len(det_list[i-1].h),
+                                        x=spos_i[idx_sorted],
+                                        weights=crt_i[idx_sorted],)
 
         # yield IRFSIteration(
         #     sigest=sig_i,
@@ -89,6 +97,7 @@ def irfs(data: sig.Signal,
             "mu": mu_i,
             "kappa": kappa_i,
             "threshold": thr_i,
+            "sigest_vib": vib_sig_i
         }
 
 
