@@ -438,11 +438,10 @@ def pr_irfs_uia(results):
 
     ax1 = plt.subplot(4, 1, 1)
     ax1.plot(results["signal"].x*revs_to_time, results["signal"].y, c="k", lw=0.5)
-    ax1.set_ylabel("Signal\n"+r"$\bar{y}[n]$")
+    ax1.set_ylabel("Signal\n"+r"$y[n]$")
     ax2 = plt.subplot(4, 1, 2)
     ax2.plot(results["resid"].x*revs_to_time, results["resid"].y, c="k", lw=0.5)
-    ax2.set_ylabel("Residual\n"+r"$\hat{\bar{x}}[n]$")
-    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Pre-filter\n"+r"$x[n]$")
     ax2.set_xlim(revs_min*revs_to_time, revs_max*revs_to_time)
     ax1.sharex(ax2)
 
@@ -455,36 +454,37 @@ def pr_irfs_uia(results):
                     results["resid"].uniform_samples)
 
     ax3 = plt.subplot(4, 1, 3)
-    ax3.plot(mf.x, mf.y, c="k", lw=0.5)
+    ax3.plot(mf.x*revs_to_time, mf.y, c="k", lw=0.5)
     # ax3.axhline(results["irfs"]["threshold"], c="k", ls="--", label="Threshold")
-    ax3.scatter(results["irfs"]["eosp"], results["irfs"]["magnitude"],
+    ax3.scatter(results["irfs"]["eosp"]*revs_to_time, results["irfs"]["magnitude"],
                   c="lightsteelblue", s=dotsize, label="Detected events")
     ax3.set_ylabel("Test\nstatistic\n"+r"$q^{(i)}[n]$")
-    ax3.set_xlabel("Revs")
-    ax3.set_xlim(revs_min, revs_max)
+    ax3.sharex(ax2)
+    ax3.set_xlabel("Time [s]")
+    ax3.set_xlim(revs_min*revs_to_time, revs_max*revs_to_time)
     # ax3.legend()
 
     ax4 = plt.subplot(4, 2, 7)
-    ordf = results["irfs"]["ordf"]
-    eosp = results["irfs"]["eosp"]
-    ordx = np.arange(0, 10, 0.01)
-    evsp = evt.event_spectrum(ordx, eosp)
-    ax4.axvline(ordf, c="lightsteelblue", lw=3, label="Fault order "+r"$\hat{O}^{(i)}_f$")
-    ax4.plot(ordx, abs(evsp), c="k", lw=0.5) 
+    ff = results["irfs"]["ordf"]/revs_to_time
+    print(ff)
+    eot = results["irfs"]["eosp"]*revs_to_time
+    fx = np.arange(0, 200, 0.1)
+    evsp = evt.event_spectrum(fx, eot)
+    ax4.axvline(ff, c="lightsteelblue", lw=3, label="Fault frequency "+r"$\hat{f}^{(i)}_c$")
+    ax4.plot(fx, abs(evsp), c="k", lw=0.5) 
     # ax4.axhline(len(eosp), ls="-", c="gray", label="#Detected events")
-    ax4.set_xlim(ordx[0], ordx[-1])
-    ax4.set_ylabel(f"Event\nspectrum\n"+r"$|\Psi^{(i)}(\theta)|$")
-    ax4.set_xlabel("Order [X]")
-    ax4.annotate(r"$\hat{O}^{(i)}_f$", (ordf, 130))
+    ax4.set_xlim(fx[0], fx[-1])
+    ax4.set_ylabel(f"Event\nspectrum\n"+r"$|\Psi^{(i)}(t)|$")
+    ax4.set_xlabel("Frequency [Hz]")
+    ax4.annotate(r"$\hat{f}^{(i)}_c$", (ff, 130))
     # ax4.legend(loc="upper center")
     
     ax5 = plt.subplot(4, 2, 8)
-    ordf = results["irfs"]["ordf"]
     zpdf = np.linspace(0, 2*np.pi, 1000)
     kappa = results["irfs"]["kappa"]
     mu = results["irfs"]["mu"]
-    z = evt.map_circle(ordf, eosp)
-    n = evt.period_number(ordf, eosp)
+    z = evt.map_circle(ff, eot)
+    n = evt.period_number(ff, eot)
     pdf = scipy.stats.vonmises.pdf(zpdf, kappa, loc=mu)
     # ax_pdf = ax5.twinx()
     # ax_pdf = ax5

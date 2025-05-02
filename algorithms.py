@@ -27,11 +27,14 @@ def irfs(residual: sig.Signal,
          sigsize: int,
          sigshift: int,
          vibration: sig.Signal = None,
+         vibration_sigsize: int | None = None,
          hys: float = .01,
          enedet_max_loc_error: int = 10,
          n_iter: int = 10,
          threshold_trials = 10,) -> Generator[IRFSIteration, None, None]:
     
+    if not vibration_sigsize:
+        vibration_sigsize = sigsize
 
     # initial iteration
     ordf1, _ = evt.find_order(spos1, ordmin, ordmax)
@@ -73,10 +76,11 @@ def irfs(residual: sig.Signal,
 
         vib_sig_i = None
         if vibration:
-            vib_sig_i = utl.estimate_signature(vibration,
-                                        len(det_list[i-1].h),
-                                        x=spos_i[idx_sorted],
-                                        weights=crt_i[idx_sorted],)
+            vib_sig_i = utl.estimate_signature(
+                vibration,
+                vibration_sigsize,
+                x=spos_i[idx_sorted],
+                weights=crt_i[idx_sorted],)
 
         # yield IRFSIteration(
         #     sigest=sig_i,

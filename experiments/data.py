@@ -69,7 +69,7 @@ class Benchmark(TypedDict):
 
 
 def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
-                         medfiltsize, sknperseg):
+                         medfiltsize, sknperseg, vibration_sigsize = None):
     """Wrapper function of a general experiment to test all benchmark methods
     on one set of data.
     
@@ -93,7 +93,8 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
 
     # IRFS method.
     spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
-    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift, signal)
+    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift,
+                           vibration=signal, vibration_sigsize=vibration_sigsize)
     irfs_result, = deque(irfs, maxlen=1)
 
     irfs_out = np.correlate(resid.y, irfs_result["sigest"], mode="valid")
@@ -197,6 +198,7 @@ def ex_uia(process_kwargs):
     kwargs = {
         "data_name": str(pathlib.Path(*file_path.parts[-2:])),
         "sigsize": 400,
+        "vibration_sigsize": 600,
         "sigshift": -150,
         "signal": signal,
         "resid": resid,
@@ -255,7 +257,8 @@ def ex_unsw(process_kwargs):
     resid = sig.Signal.from_uniform_samples(residt.y, angfhz/fs)
     kwargs = {
         "data_name": str(file_path),
-        "sigsize": 400,
+        "sigsize": 200,
+        "vibration_sigsize": 600,
         "sigshift": -100,
         "signal": signal,
         "resid": resid,
@@ -308,6 +311,7 @@ def ex_cwru(process_kwargs):
     kwargs = {
         "data_name": str(signal_id),
         "sigsize": 400,
+        "vibration_sigsize": 600,
         "sigshift": -150,
         "signal": signal,
         "resid": resid,
@@ -409,12 +413,12 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
 
         ax[i, 0].grid(which="both")
 
-        sigest = results["irfs_result"]["sigest"]
+        sigest = results["irfs_result"]["sigest_vib"]
         x = np.arange(len(sigest))*dx
         ax[i, 1].plot(x, sigest, c="k", lw=0.5)
         ax[i][1].set_ylabel("Signature\nestimate")
         ax[i][1].set_yticks([])
-        ax[-1][1].set_xlabel("Revs")
+        ax[-1][1].set_xlabel("Time [s]")
         # ax[0][1].set_xticks([])
 
     h, l = ax[0][0].get_legend_handles_labels()
@@ -425,27 +429,22 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
 
 @presentation(uia)
 def present_uia(results: ExperimentResults):
-    rpm = 1000 # angular speed in rpm
-    fs = 51200 # sample frequency
-    dx = (rpm/60)/fs
-    present_benchmarks(results["benchmarks"], include_idx=[2, 3, 4], dx=dx)
+    present_benchmarks(results["benchmarks"], include_idx=[2, 3, 4],
+                       dx=1/51200)
 
 
 @presentation(unsw)
 def present_unsw(results: ExperimentResults):
-    shaft_freq = 6
-    sample_freq = 51200
-    dx = shaft_freq/sample_freq
-    present_benchmarks(results["benchmarks"], include_idx=[11, 12, 13], dx=dx)
+    present_benchmarks(results["benchmarks"], include_idx=[11, 12, 13],
+                       dx=1/51200)
 
 
 @presentation(cwru)
 def present_cwru(results: ExperimentResults):
     dl = results["dataloader"]
     fs = dl.info["fs"]
-    rpm = 1750 # approx
-    dx = (rpm/60)/fs
-    present_benchmarks(results["benchmarks"], include_names=["175", "176", "215"], dx=dx)
+    present_benchmarks(results["benchmarks"],
+                       include_names=["175", "176", "215"], dx=1/fs)
 
 
 @presentation(uia, unsw, cwru)
@@ -458,24 +457,19 @@ def present_stacked_signatures(benchmark: Benchmark,
                                dl: faultevent.data.DataLoader,
                                ar_model: sig.ARModel,
                                idx_eosp: Sequence[int],
-                               siglen: int,
                                rpm: float,
                                fs: float):
 
     vibt = dl[benchmark["data_name"]].vib
     rest = ar_model.residuals(vibt)
-    res = sig.Signal(rest.y, rest.x*rpm/60, uniform_samples=rest.uniform_samples)
     vib = sig.Signal(vibt.y, vibt.x*rpm/60, uniform_samples=vibt.uniform_samples)
     eosp = benchmark["irfs_result"]["eosp"]
-    dx = rpm/60/fs
+    dx = 1/fs
+    sigest = benchmark["irfs_result"]["sigest"]
+    siglen = len(sigest)
     x = np.arange(siglen)*dx#-res.x[0]
 
-    sigest_vibpred = ar_model.process(
-        sig.Signal(benchmark["irfs_result"]["sigest"], x+ar_model.p*dx, uniform_samples=True),
-        x0=np.zeros((ar_model.p,)))
-
     eosp_to_plot = eosp[idx_eosp]
-    idx_res = res.idx_closest(eosp_to_plot)+ar_model.p
     idx_vib = vib.idx_closest(eosp_to_plot)+ar_model.p
 
     crt = benchmark["irfs_result"]["certainty"]
@@ -483,31 +477,23 @@ def present_stacked_signatures(benchmark: Benchmark,
     sigest_vib = utl.estimate_signature(vib, siglen, x=eosp, weights=crtsort,
                                         n0=ar_model.p)
 
-    # matplotlib.rcParams.update({"font.size": 6})
-    fig, ax = plt.subplots(len(eosp_to_plot)+1, 2, sharex=True, sharey=False,
-                        #    figsize=(3.5, 2.5),
-                           figsize=(12.0, 8.0),
+    matplotlib.rcParams.update({"font.size": 6})
+    fig, ax = plt.subplots(len(eosp_to_plot)+1, 1, sharex=True, sharey=False,
+                           figsize=(3.5, 2.5),
                            gridspec_kw={"height_ratios": [1.0]*len(eosp_to_plot)+[2.0]})
     for i, eosp_ in enumerate(eosp_to_plot):
-        reswin = res[idx_res[i]:idx_res[i]+siglen]
         # vibwin = vib[idx_vib[i]+ar_model.p:idx_vib[i]+ar_model.p+siglen]
         vibwin = vib[idx_vib[i]:idx_vib[i]+siglen]
-        ax[i][0].plot(x, reswin.y, c="k", lw=0.5)
-        ax[i][1].plot(x, vibwin.y, c="k", lw=0.5)
-        ax[i][0].set_ylabel("Residual\nwindow")
-        ax[i][1].set_ylabel("Vibration\nwindow")
+        ax[i].plot(x, vibwin.y, c="k", lw=0.5)
+        ax[i].set_ylabel("Vib.\nwindow")
         # ax[i].set_ylim(-0.1, 0.1)
+        ax[i].set_yticks([])
     
-    ax[-1][0].plot(x, benchmark["irfs_result"]["sigest"], lw=0.8, color="orange", label="res sigest")
-    ax[-1][1].plot(x, sigest_vib, lw=0.8, color="blue", label="vib sigest")
-    ax[-1][1].plot(sigest_vibpred.x-res.x[0], sigest_vibpred.y, lw=0.8, color="orange", label="pred")
-    ax[-1][0].set_ylabel("Vibration signature\nestimate")
-    ax[-1][0].set_xlabel("Revs")
-    ax[-1][1].set_ylabel("Residual signature\nestimate")
-    ax[-1][1].set_xlabel("Revs")
-    ax[-1][1].legend()
-    ax[-1][0].legend()
-    # ax[-1].set_ylim(-0.1, 0.1)
+    ax[-1].plot(x, sigest_vib, lw=0.8, c="k")
+    ax[-1].set_ylabel("Signature\nestimate")
+    ax[-1].set_xlabel("Time [s]")
+    # ax[-1].set_ylim(-0.05, 0.05)
+    ax[-1].set_yticks([])
 
     plt.tight_layout()
     plt.show()
@@ -518,7 +504,7 @@ def present_uia_stacked(results: ExperimentResults):
     benchmark = select_benchmarks(results["benchmarks"], include_idx=[2])[0]
     present_stacked_signatures(benchmark=benchmark, dl=results["dataloader"],
                                ar_model=results["ar_model"], idx_eosp=range(4, 8),
-                               siglen=400, rpm=1000, fs=51200)
+                               rpm=1000, fs=51200)
 
 
 @presentation(unsw)
@@ -527,4 +513,4 @@ def present_unsw_stacked(results: ExperimentResults):
     dx = 6/51200
     present_stacked_signatures(benchmark=benchmark, dl=results["dataloader"],
                                ar_model=results["ar_model"], idx_eosp=range(4),
-                               siglen=200, rpm=360, fs=51200)
+                               rpm=360, fs=51200)

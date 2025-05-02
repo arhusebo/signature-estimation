@@ -2,6 +2,7 @@ from multiprocessing import Pool
 from typing import TypedDict, Callable, NotRequired
 from collections import deque
 from collections.abc import Sequence
+from functools import cache
 
 import numpy as np
 import numpy.typing as npt
@@ -10,7 +11,7 @@ import scipy.signal
 import matplotlib
 import matplotlib.pyplot as plt
 
-from faultevent.signal import Signal
+from faultevent.signal import Signal, ARModel
 from faultevent.event import event_spectrum
 import algorithms
 
@@ -165,16 +166,27 @@ def generate_resid(residual: ResidualDescriptor, seed=0):
     }
 
 
-def estimate_signat(resid: Signal, indices: Sequence[int],
+@cache
+def get_armodel() -> ARModel:
+    """Fit an AR model for generating signals from synthetic residuals"""
+    from data.uia import UiADataLoader
+    from data import uia_path
+    dl = UiADataLoader(uia_path)
+
+    mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
+    return ARModel.from_signal(mh.vib[:10000], 117) # AR model
+
+
+def estimate_signat(signal: Signal, indices: Sequence[int],
                     siglen: int, shift: int) -> Sequence[float]:
-    """Estimates the signature from the residual signal, signal indices,
+    """Estimates the signature from the signal, signal indices,
     a desired signature length and a shift."""
     n_samples = 0
     running_sum = np.zeros((siglen,))
     for idx in indices:
-        if idx+shift >= 0 and idx+shift+siglen < len(resid):
+        if idx+shift >= 0 and idx+shift+siglen < len(signal):
             n_samples += 1
-            running_sum += resid.y[idx+shift:idx+shift+siglen]
+            running_sum += signal.y[idx+shift:idx+shift+siglen]
     sig = running_sum/n_samples
     return sig
 
@@ -210,35 +222,59 @@ def benchmark(residual: ResidualDescriptor,
     score_med_results = algorithms.score_med(resid, medfiltsize, [(ordmin, ordmax)])
     residf = score_med_results["filtered"]
 
+    vib = get_armodel().process(resid)
+
     # IRFS method
     spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
-    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, sigestlen, sigestshift)
+    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, sigestlen, sigestshift,
+                           vibration=vib)
     irfs_result, = deque(irfs, maxlen=1)
 
     irfs_out = np.correlate(resid.y, irfs_result["sigest"], mode="valid")
     irfs_filt = Signal(irfs_out, resid.x[:-len(irfs_result["sigest"])+1],
                         resid.uniform_samples)
 
-
     # estimate signature using MED and peak detection
-    medout = algorithms.med_filter(resid, medfiltsize, "impulse")
+    medout = algorithms.med_filter(vib, medfiltsize, "impulse")
     medenv = abs(scipy.signal.hilbert(medout.y))
     medpeaks, _ = scipy.signal.find_peaks(medenv, distance=avg_event_period/2)
-    sigest_med = estimate_signat(resid, medpeaks, sigestlen, sigestshift)
+    sigest_med = estimate_signat(vib, medpeaks, sigestlen, sigestshift)
     
     # estimate signature using SK and peak detection
-    skout = algorithms.skfilt(resid)
+    skout = algorithms.skfilt(vib)
     skenv = abs(skout.y)
     skpeaks, _ = scipy.signal.find_peaks(skenv, distance=avg_event_period/2)
-    sigest_sk = estimate_signat(resid, skpeaks, sigestlen, sigestshift)
+    sigest_sk = estimate_signat(vib, skpeaks, sigestlen, sigestshift)
+
+    # estimate signature using AR-MED and peak detection
+    armedout = algorithms.med_filter(resid, medfiltsize, "impulse")
+    armedenv = abs(scipy.signal.hilbert(armedout.y))
+    armedpeaks, _ = scipy.signal.find_peaks(armedenv, distance=avg_event_period/2)
+    sigest_armed = estimate_signat(vib, armedpeaks, sigestlen, sigestshift)
+    
+    # estimate signature using AR-SK and peak detection
+    arskout = algorithms.skfilt(resid)
+    arskenv = abs(arskout.y)
+    arskpeaks, _ = scipy.signal.find_peaks(arskenv, distance=avg_event_period/2)
+    sigest_arsk = estimate_signat(vib, arskpeaks, sigestlen, sigestshift)
+    
+    # Compound method from
+    # https://www.papers.phmsociety.org/index.php/phmconf/article/download/3522/phmc_23_3522
+    cmout = algorithms.skfilt(armedout)
+    cmenv = abs(cmout.y)
+    cmpeaks, _ = scipy.signal.find_peaks(cmenv, distance=avg_event_period/2)
+    sigest_cm = estimate_signat(vib, cmpeaks, sigestlen, sigestshift)
 
     results: BenchmarkResults = {
         "eosp": genres["eosp"],
         "event_labels": genres["event_labels"],
         "methods": {
-            "irfs": {"sigest": irfs_result["sigest"], "eosp": irfs_result["eosp"]},
+            "irfs": {"sigest": irfs_result["sigest_vib"], "eosp": irfs_result["eosp"]},
             "med": {"sigest": sigest_med, "eosp": medout.x[medpeaks]},
             "sk": {"sigest": sigest_sk, "eosp": skout.x[skpeaks]},
+            "armed": {"sigest": sigest_armed, "eosp": armedout.x[armedpeaks]},
+            "arsk": {"sigest": sigest_arsk, "eosp": arskout.x[arskpeaks]},
+            "cm": {"sigest": sigest_cm, "eosp": cmout.x[cmpeaks]},
         },
     }
 
@@ -251,7 +287,8 @@ def nmse_shift(sigest, sigtruefunc, shiftmax=100):
     sigest_ = sigest.copy()
     sigest_ /= np.linalg.norm(sigest_)
     siglen = len(sigest_)
-    sigtrue = sigtruefunc(np.arange(siglen))
+    sigtrue = get_armodel().process(
+        Signal.from_uniform_samples(sigtruefunc(np.arange(siglen)))).y
     sigtrue /= np.linalg.norm(sigtrue)
 
     if shiftmax>0:
@@ -304,7 +341,7 @@ def snr_monte_carlo(n_anomalous=0, mc_iterations=10):
             args = (snr, seed, n_anomalous)
             list_args.append(args)
 
-    with Pool() as p:
+    with Pool(6) as p:
         rmse = p.starmap(common_snr_experiment, list_args)
     
     return snr_to_eval, rmse
@@ -327,13 +364,13 @@ def pr_snr(results: Sequence[npt.ArrayLike, tuple]):
     matplotlib.rcParams.update({"font.size": 6})
     fig, ax = plt.subplots(2, 1, sharex=True, figsize=(3.5, 2.0))
     ylabels = ["A", "B"]
-    legend = ["IRFS", "MED", "SK"]
-    markers = ["o", "^", "d"]
+    legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
+    markers = ["o", "^", "d", ".", "*", "+"]
     for i, result in enumerate(results):
         snr_to_eval, rmse = result
-        rmse = np.reshape(rmse, (len(snr_to_eval), -1, 3))
+        rmse = np.reshape(rmse, (len(snr_to_eval), -1, 6))
         snr = 10*np.log10(snr_to_eval)
-        mean_rmse = np.mean(rmse, 1)
+        mean_rmse = np.nanmean(rmse, 1) # TODO: `nanmean` if points are missing
         for j in range(mean_rmse.shape[-1]):
             ax[i].plot(snr, mean_rmse[:,j], marker=markers[j])
         ax[i].set_ylabel(f"NMSE\n{ylabels[i]}")
@@ -342,7 +379,7 @@ def pr_snr(results: Sequence[npt.ArrayLike, tuple]):
         ax[i].set_xticks(range(-20, 1, 5))
     
     ax[-1].set_xlabel("SNR (dB)")
-    ax[0].legend(legend, ncol=len(legend), loc="upper center",
+    ax[0].legend(legend, ncol=len(legend)//2, loc="upper center",
                  bbox_to_anchor=(0.5, 1.3))
     
     plt.tight_layout(pad=0.0)
@@ -387,7 +424,7 @@ def ex_sir():
             }
             args.append((interference, seed))
 
-    with Pool() as p:
+    with Pool(6) as p:
         rmse = p.starmap(interference_experiment, args)
     
     return sir, interf_cfreq, rmse
@@ -423,19 +460,19 @@ def ex_sir_frequency():
 @presentation(ex_sir)
 def pr_sir_basic(result):
     
-    plt.figure(figsize=(3.5, 1.0))
+    plt.figure(figsize=(3.5, 1.5))
     matplotlib.rcParams.update({"font.size": 6})
 
     
     # plot NMSE against SIR
     sir_to_eval, interf_cfreq, rmse = result
-    legend = ["IRFS", "MED", "SK"]
-    markers = ["o", "^", "d"]
-    rmse = np.reshape(rmse, (len(sir_to_eval), -1, 3))
+    legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
+    markers = ["o", "^", "d", ".", "*", "+"]
+    rmse = np.reshape(rmse, (len(sir_to_eval), -1, 6))
 
     sir = 10*np.log10(sir_to_eval)
     plt.ylabel(f"NMSE")
-    mean_rmse = np.mean(rmse, 1)
+    mean_rmse = np.nanmean(rmse, 1)
     for i in range(mean_rmse.shape[-1]):
         plt.plot(sir, mean_rmse[:,i], marker=markers[i])
     plt.grid()
@@ -449,8 +486,8 @@ def pr_sir_basic(result):
     #plt.gca().invert_xaxis()
 
     #h, l = ax[0].get_legend_handles_labels()
-    plt.legend(legend)
-    # plt.legend(legend, ncol=len(legend), loc="upper center",)
+    # plt.legend(legend)
+    plt.legend(legend, ncol=len(legend)//2, loc="upper center",)
                 # bbox_to_anchor=(0.5, 1.5))
     plt.tight_layout(pad=0.0)
     plt.show()
