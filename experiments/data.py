@@ -465,17 +465,17 @@ def present_stacked_signatures(benchmark: Benchmark,
     vib = sig.Signal(vibt.y, vibt.x*rpm/60, uniform_samples=vibt.uniform_samples)
     eosp = benchmark["irfs_result"]["eosp"]
     dx = 1/fs
-    sigest = benchmark["irfs_result"]["sigest"]
+    sigest = benchmark["irfs_result"]["sigest_vib"]
     siglen = len(sigest)
     x = np.arange(siglen)*dx#-res.x[0]
 
     eosp_to_plot = eosp[idx_eosp]
-    idx_vib = vib.idx_closest(eosp_to_plot)+ar_model.p
+    idx_vib = vib.idx_closest(eosp_to_plot)#+ar_model.p
 
     crt = benchmark["irfs_result"]["certainty"]
     crtsort = np.sort(crt)[::-1]
-    sigest_vib = utl.estimate_signature(vib, siglen, x=eosp, weights=crtsort,
-                                        n0=ar_model.p)
+    # sigest_vib = utl.estimate_signature(vib, siglen, x=eosp, weights=crtsort,
+    #                                     n0=ar_model.p)
 
     matplotlib.rcParams.update({"font.size": 6})
     fig, ax = plt.subplots(len(eosp_to_plot)+1, 1, sharex=True, sharey=False,
@@ -489,7 +489,7 @@ def present_stacked_signatures(benchmark: Benchmark,
         # ax[i].set_ylim(-0.1, 0.1)
         ax[i].set_yticks([])
     
-    ax[-1].plot(x, sigest_vib, lw=0.8, c="k")
+    ax[-1].plot(x, sigest, lw=0.8, c="k")
     ax[-1].set_ylabel("Signature\nestimate")
     ax[-1].set_xlabel("Time [s]")
     # ax[-1].set_ylim(-0.05, 0.05)

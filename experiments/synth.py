@@ -334,7 +334,7 @@ def snr_monte_carlo(n_anomalous=0, mc_iterations=10):
     """For a set of SNR-values, runs the general snr experiment multiple
     times using multiprocessing."""
     
-    snr_to_eval = np.logspace(-2, 0, 5).tolist()
+    snr_to_eval = np.logspace(-2, 0, 10).tolist()
     list_args = []
     for snr in snr_to_eval:
         for seed in range(mc_iterations):
@@ -366,13 +366,15 @@ def pr_snr(results: Sequence[npt.ArrayLike, tuple]):
     ylabels = ["A", "B"]
     legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
     markers = ["o", "^", "d", ".", "*", "+"]
+    cmap = plt.get_cmap("tab10")
+    cmap_idx = [0, 1, 2, 1, 2, 3]
     for i, result in enumerate(results):
         snr_to_eval, rmse = result
         rmse = np.reshape(rmse, (len(snr_to_eval), -1, 6))
         snr = 10*np.log10(snr_to_eval)
         mean_rmse = np.nanmean(rmse, 1) # TODO: `nanmean` if points are missing
         for j in range(mean_rmse.shape[-1]):
-            ax[i].plot(snr, mean_rmse[:,j], marker=markers[j])
+            ax[i].plot(snr, mean_rmse[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
         ax[i].set_ylabel(f"NMSE\n{ylabels[i]}")
         ax[i].grid()
         ax[i].set_yticks([0.0, 0.5, 1.0])
@@ -410,9 +412,9 @@ def ex_sir():
     experiment multiple times using multiprocessing."""
     
     # sir = np.linspace(5, 0.2, 10).tolist()
-    sir_max = 5.0
-    sir_min = 0.2
-    sir = np.logspace(np.log10(sir_max), np.log10(sir_min), 5).tolist()
+    sir_max = 3.0
+    sir_min = 0.1
+    sir = np.logspace(np.log10(sir_max), np.log10(sir_min), 10).tolist()
     interf_cfreq = 16e3
     args = [] 
     for sir_ in sir:
@@ -468,13 +470,15 @@ def pr_sir_basic(result):
     sir_to_eval, interf_cfreq, rmse = result
     legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
     markers = ["o", "^", "d", ".", "*", "+"]
+    cmap = plt.get_cmap("tab10")
+    cmap_idx = [0, 1, 2, 1, 2, 3]
     rmse = np.reshape(rmse, (len(sir_to_eval), -1, 6))
 
-    sir = 10*np.log10(sir_to_eval)
+    sir = np.round(10*np.log10(sir_to_eval),1)
     plt.ylabel(f"NMSE")
     mean_rmse = np.nanmean(rmse, 1)
     for i in range(mean_rmse.shape[-1]):
-        plt.plot(sir, mean_rmse[:,i], marker=markers[i])
+        plt.plot(sir, mean_rmse[:,i], marker=markers[i], c=cmap(cmap_idx[i]))
     plt.grid()
     # plt.yticks([0.0, 0.25, 0.5, 0.75, 1.0])
     plt.yticks([0.0, 0.5, 1.0])
@@ -487,8 +491,8 @@ def pr_sir_basic(result):
 
     #h, l = ax[0].get_legend_handles_labels()
     # plt.legend(legend)
-    plt.legend(legend, ncol=len(legend)//2, loc="upper center",)
-                # bbox_to_anchor=(0.5, 1.5))
+    plt.legend(legend, ncol=len(legend)//2, loc="upper center",
+               bbox_to_anchor=(0.5, 1.3))
     plt.tight_layout(pad=0.0)
     plt.show()
 
@@ -600,7 +604,7 @@ def common_eosp_experiment(snr, seed):
 
 @experiment(OUTPUT_PATH, json=False)
 def ex_eosp():
-    snr_to_eval = np.logspace(-2, 0, 5).tolist()
+    snr_to_eval = np.logspace(-2, 0, 10).tolist()
     list_args = []
     for snr in snr_to_eval:
         for seed in range(MC_ITERATIONS):
@@ -617,22 +621,24 @@ def ex_eosp():
 def pr_eosp(results):
     snr, metric = results
 
-    metric = np.reshape(metric, (len(snr), -1, 3))
+    metric = np.reshape(metric, (len(snr), -1, 6))
     snr = 10*np.log10(snr)
     mean_metric = np.mean(metric, 1)
     
     matplotlib.rcParams.update({"font.size": 6})
-    fig, ax = plt.subplots(figsize=(3.5, 1.0))
-    legend = ["IRFS", "MED", "SK"]
-    markers = ["o", "^", "d"]
+    fig, ax = plt.subplots(figsize=(3.5, 1.5))
+    legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
+    markers = ["o", "^", "d", ".", "*", "+"]
+    cmap = plt.get_cmap("tab10")
+    cmap_idx = [0, 1, 2, 1, 2, 3]
     for i in range(mean_metric.shape[-1]):
-        ax.plot(snr, mean_metric[:,i], marker=markers[i])
+        ax.plot(snr, mean_metric[:,i], marker=markers[i], c=cmap(cmap_idx[i]))
     ax.set_xlabel("SNR (dB)")
     ax.set_ylabel("EOSP error\n(revs)")
     ax.grid()
-    ax.legend(legend)
-    # ax.legend(legend, ncol=len(legend), loc="upper center",)
-            #   bbox_to_anchor=(0.5, 1.3))
+    ax.set_yticks([0.0, 0.02, 0.04, 0.06])
+    plt.legend(legend, ncol=len(legend)//2, loc="upper center",
+               bbox_to_anchor=(0.5, 1.3))
     plt.tight_layout(pad=0.0)
     plt.show()
 
