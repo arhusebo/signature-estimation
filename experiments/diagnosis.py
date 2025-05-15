@@ -1,6 +1,7 @@
 import logging
 from multiprocessing import Pool
 
+import data
 from algorithms import score_med, enedetloc, diagnose_fault
 from faultevent.signal import Signal, ARModel
 
@@ -40,10 +41,8 @@ def sample_experiment(data):
 
 @experiment(output_path)
 def ex_cwru():
-
     from data import cwru
-    from data import cwru_path
-    dl = cwru.CWRUDataLoader(cwru_path)
+    dl = data.dataloader("cwru")
     mh = dl["100"]
     
     model = ARModel.from_signal(mh.vib[:10000], 75) # AR model
@@ -81,9 +80,7 @@ def ex_cwru():
 
 @presentation(ex_cwru)
 def present_cwru_diagnosis(results):
-    from data import cwru
-    from data import cwru_path
-    dl = cwru.CWRUDataLoader(cwru_path)
+    dl = data.dataloader("cwru")
     print(r"\begin{center}")
     print(r"\begin{tabular}{ c c c }")
     print(r"\hline")

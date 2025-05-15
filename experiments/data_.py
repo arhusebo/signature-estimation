@@ -12,6 +12,7 @@ import faultevent.event as evt
 import faultevent.util as utl
 
 import algorithms
+import data
 
 from simsim import experiment, presentation
 
@@ -174,9 +175,7 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
 
 @experiment(output_path)
 def ex_uia():
-    from data.uia import UiADataLoader
-    from data import uia_path
-    dl = UiADataLoader(uia_path)
+    dl = data.dataloader("uia")
     mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
     mf = dl["y2016-m09-d24/00-40-22 1000rpm - 51200Hz - 100LOR.h5"]
     
@@ -203,9 +202,7 @@ def ex_uia():
 
 @experiment(output_path)
 def ex_unsw():
-    from data.unsw import UNSWDataLoader
-    from data import unsw_path
-    dl = UNSWDataLoader(unsw_path)
+    dl = data.dataloader("unsw")
     mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
     mf = dl["Test 1/6Hz/vib_000356575_06.mat"]
     
@@ -232,9 +229,7 @@ def ex_unsw():
 
 @experiment(output_path)
 def ex_cwru():
-    from data.cwru import CWRUDataLoader
-    from data import cwru_path
-    dl = CWRUDataLoader(cwru_path)
+    dl = data.dataloader("cwru")
     mh = dl["100"]
     mf = dl["175"]
     

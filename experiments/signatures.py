@@ -9,6 +9,7 @@ import faultevent.signal as sig
 import faultevent.event as evt
 
 import algorithms
+import data
 
 from simsim import experiment, presentation
 
@@ -51,9 +52,7 @@ def signature_experiment(sigsize, sigshift, resid, ordc, medfiltsize):
 
 @experiment(output_path)
 def uia1():
-    from data.uia import UiADataLoader
-    from data import uia_path
-    dl = UiADataLoader(uia_path)
+    dl = data.dataloader("uia")
     mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
     mf = dl["y2016-m09-d24/00-40-22 1000rpm - 51200Hz - 100LOR.h5"]
     rpm = 1000
@@ -72,9 +71,7 @@ def uia1():
 
 @experiment(output_path)
 def uia2():
-    from data.uia import UiADataLoader
-    from data import uia_path
-    dl = UiADataLoader(uia_path)
+    dl = data.dataloader("uia")
     mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
     mf = dl["y2016-m09-d24/00-50-31 1000rpm - 51200Hz - 100LOR.h5"]
     rpm = 1000
@@ -93,9 +90,7 @@ def uia2():
 
 @experiment(output_path)
 def unsw1():
-    from data.unsw import UNSWDataLoader
-    from data import unsw_path
-    dl = UNSWDataLoader(unsw_path)
+    dl = data.dataloader("unsw")
     mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
     #mf = dl["Test 1/6Hz/vib_000356575_06.mat"]
     mf = dl["Test 1/6Hz/vib_000002663_06.mat"]
@@ -116,9 +111,7 @@ def unsw1():
 
 @experiment(output_path)
 def unsw2():
-    from data.unsw import UNSWDataLoader
-    from data import unsw_path
-    dl = UNSWDataLoader(unsw_path)
+    dl = data.dataloader("unsw")
     mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
     mf = dl["Test 4/Multiple speeds/vib_001674651_06.mat"]
     angfhz = 6
@@ -138,9 +131,7 @@ def unsw2():
 
 @experiment(output_path)
 def cwru1():
-    from data.cwru import CWRUDataLoader
-    from data import cwru_path
-    dl = CWRUDataLoader(cwru_path)
+    dl = data.dataloader("cwru")
     mh = dl["100"]
     mf = dl["175"]
     rpm = dl.signal_info("175")["rpm"]
@@ -158,9 +149,7 @@ def cwru1():
 
 @experiment(output_path)
 def cwru2():
-    from data.cwru import CWRUDataLoader
-    from data import cwru_path
-    dl = CWRUDataLoader(cwru_path)
+    dl = data.dataloader("cwru")
     mh = dl["100"]
     mf = dl["192"]
     rpm = dl.signal_info("192")["rpm"]

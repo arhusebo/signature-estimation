@@ -14,9 +14,9 @@ import faultevent.event as evt
 import faultevent.util as utl
 
 import algorithms
+import data
 
 from simsim import experiment, presentation
-
 
 output_path = "results/data"
 
@@ -211,9 +211,7 @@ def ex_uia(process_kwargs):
 
 @experiment(output_path)
 def uia() -> ExperimentResults:
-    from data.uia import UiADataLoader
-    from data import uia_path
-    dl = UiADataLoader(uia_path)
+    dl = data.dataloader("uia")
 
     mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
     model = sig.ARModel.from_signal(mh.vib[:10000], 117) # AR model
@@ -271,9 +269,7 @@ def ex_unsw(process_kwargs):
 
 @experiment(output_path)
 def unsw() -> ExperimentResults:
-    from data.unsw import UNSWDataLoader
-    from data import unsw_path
-    dl = UNSWDataLoader(unsw_path)
+    dl = data.dataloader("unsw")
 
     mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
     model = sig.ARModel.from_signal(mh.vib[:10000], 41)
@@ -328,9 +324,7 @@ def ex_cwru(process_kwargs):
 
 @experiment(output_path)
 def cwru() -> ExperimentResults:
-    from data import cwru
-    from data import cwru_path
-    dl = cwru.CWRUDataLoader(cwru_path)
+    dl = data.dataloader("cwru")
 
     mh = dl["100"]
     model = sig.ARModel.from_signal(mh.vib[:10000], 75)
