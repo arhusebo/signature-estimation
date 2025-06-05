@@ -52,7 +52,6 @@ def data_path(config: Config, name: DataName) -> str:
 
 def dataloader(name: DataName):
     dp = data_path(name)
-    print(dp)
     match name:
         case DataName.UIA:
             return UiADataLoader(dp)
