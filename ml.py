@@ -1,29 +1,26 @@
-from typing import Sequence, Literal
+from typing import Sequence, TypedDict
 import itertools
+import pathlib
 import numpy as np
 import torch
+
 import data
+from config import load_config
 
 from faultevent.data import DataLoader
-
-class RecurrentModel(torch.nn.Module):
-    """This model is not fully developed and tested"""
-
-    def __init__(self, depth = 5, hidden_size = 20):
-        super().__init__()
-        self.depth = depth
-        self.hidden_size = hidden_size
-
-        self.rnn = torch.nn.RNN(1, self.hidden_size, self.depth)
-        self.out = torch.nn.Linear(self.hidden_size, 1)
-    
-    def forward(self, x, h0):
-        x, hn = self.rnn(x, h0)
-        x = self.out(x)
-        return x
+from faultevent.signal import Signal, SignalModel
 
 
-class ConvolutionalModel(torch.nn.Module):
+class MLConfig(TypedDict):
+    model_path: str
+
+
+def model_filepath(dataset: data.DataName):
+    model_path = pathlib.Path(load_config()["ml"]["model_path"])
+    return model_path/f"{dataset}.pt"
+
+
+class Model(torch.nn.Module):
 
     def __init__(self):
         super().__init__()
@@ -79,6 +76,13 @@ class ConvolutionalModel(torch.nn.Module):
         x *= 3*std
         x -= torch.mean(x, dim=-1, keepdim=True)
         return x
+    
+    @classmethod
+    def load(cls, savepath: str):
+        model = cls()
+        state = torch.load(savepath)
+        model.load_state_dict(state["model_state_dict"])
+        return model
 
 
 def augment_sequence(signal, snr: float):
@@ -111,7 +115,7 @@ def augment_sequence(signal, snr: float):
     return signal + tilde
 
 
-def batchify(x, model_type: Literal["recu", "conv"], siglen: int):
+def batchify(x, siglen: int):
     # The number of batches is determined by the specified signal
     # length. The implications are that the batch size may vary 
     # depending on the length of the loaded signal.
@@ -119,27 +123,22 @@ def batchify(x, model_type: Literal["recu", "conv"], siglen: int):
     # (N, L)
     xb = torch.tensor(list(itertools.batched(x[:nbatches*siglen], siglen)),
                         dtype=torch.float32)
-    match model_type:
-        case "recu":
-            # (L, N, 1)
-            xb = xb.permute(-1, 0)[:,:,torch.newaxis]
-        case "conv":
-            # (N, 1, L)
-            xb = xb[:,torch.newaxis,:]
-        case _:
-            raise ValueError("invalid model type")
+    # (N, 1, L)
+    xb = xb[:,torch.newaxis,:]
 
     return xb, nbatches
 
 
-def train(model: RecurrentModel | ConvolutionalModel, dataloader: DataLoader,
-          signal_idx: Sequence, epochs: int, siglen: int, savepath: str):
+def train(dataloader: DataLoader, signal_idx: Sequence, epochs: int,
+          siglen: int, savepath: str):
+    
+    model = Model()
     
     epoch = 0
     try:
         state = torch.load(savepath)
         model.load_state_dict(state["model_state_dict"])
-        epoch = state["epoch"]
+        epoch = state["epoch"]+1
     except Exception:
         print("could not load model state")
 
@@ -160,17 +159,9 @@ def train(model: RecurrentModel | ConvolutionalModel, dataloader: DataLoader,
             optimizer.zero_grad()
 
             # model specifics
-            match model:
-                case t if isinstance(t, RecurrentModel):
-                    xb, nbatches = batchify(x, "recu", siglen)
-                    axb, _ = batchify(ax, "recu", siglen)
-                    h0 = torch.randn(model.depth, nbatches, model.hidden_size,
-                                    dtype=torch.float).to(device)
-                    yb = model(axb, h0)
-                case t if isinstance(t, ConvolutionalModel):
-                    xb, nbatches = batchify(ax, "conv", siglen)
-                    axb, _ = batchify(ax, "conv", siglen)
-                    yb = model(axb)
+            xb, _ = batchify(ax, siglen)
+            axb, _ = batchify(ax, siglen)
+            yb = model(axb)
 
             loss = loss_fn(yb, xb)
             loss.backward()
@@ -188,18 +179,39 @@ def train(model: RecurrentModel | ConvolutionalModel, dataloader: DataLoader,
         }, savepath)
     
 
+class MLSignalModel(SignalModel):
+
+    def __init__(self, model: Model):
+        self.model = model
+
+    def process(self, signal: Signal) -> Signal:
+        with torch.no_grad():
+            bx, _ = batchify(signal.y, len(signal))
+            by = self.model(bx)
+            y = torch.flatten(by).numpy()
+            out = Signal(y, signal.x, uniform_samples=signal.uniform_samples)
+            return out
+
+    def residuals(self, signal: Signal) -> Signal:
+        hest = self.process(signal)
+        out = signal-hest
+        return out
+
 
 if __name__ == "__main__":
     import argparse
     import glob
 
+    cfg = load_config()
+
+    # TODO: Remove `out` argument, add `overwrite` argument
+
     parser = argparse.ArgumentParser(
         prog="Fit signal model",
     )
-    parser.add_argument("name", help="name of the dataset")
-    parser.add_argument("model", choices=["recu", "conv"], help="type of model")
-    parser.add_argument("-o", "--out", type=str, default=None,
-                        help="model output path")
+    parser.add_argument("name", choices=list(data.DataName), help="name of the dataset")
+    parser.add_argument("-x", "--overwrite", action="store_true",
+                        help="overwrite existing model")
     parser.add_argument("-l", "--len", type=int, default=10000,
                         help="signal training length")
     parser.add_argument("-e", "--epochs", type=int, default=20,
@@ -225,16 +237,5 @@ if __name__ == "__main__":
         case _:
             raise ValueError("dataloader not recognized")
 
-    match args.model:
-        case "recu":
-            model = RecurrentModel()
-        case "conv":
-            model = ConvolutionalModel()
-        case _:
-            raise ValueError("invalid model type")
-    
-    savepath = args.out
-    if savepath is None:
-        savepath = f"./{args.name}_{args.model}.pt"
-
-    train(model, dl, signal_idx, args.epochs, args.len, savepath)
+    savepath = model_filepath(args.name)
+    train(dl, signal_idx, args.epochs, args.len, savepath)

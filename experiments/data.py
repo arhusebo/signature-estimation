@@ -6,15 +6,16 @@ import matplotlib.pyplot as plt
 from typing import TypedDict, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from collections import deque
-import pathlib
+from dataclasses import dataclass
 
-import faultevent.data
 import faultevent.signal as sig
 import faultevent.event as evt
 import faultevent.util as utl
 
 import algorithms
 import data
+import util
+from config import load_config
 
 from simsim import experiment, presentation
 
@@ -60,79 +61,95 @@ class MethodOutput(TypedDict):
 
 
 class Benchmark(TypedDict):
-    data_name: str 
+    signal_id: str 
     method_outputs: list[MethodOutput]
     ordc: float
     events_max: int
     irfs_result: algorithms.IRFSIteration
 
 
+@dataclass
+class BenchmarkParams:
+    rpm: float
+    siglen: int
+    sigshift: int
+    ordc: float
+    med_filtsize: int
+    sk_nperseg: int
+    siglen_vib: int | None = None
 
-def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
-                         medfiltsize, sknperseg, vibration_sigsize = None):
-    """Wrapper function of a general experiment to test all benchmark methods
-    on one set of data.
+
+def benchmark_experiment(dataname: data.DataName, signal_id: str,
+                         params: BenchmarkParams) -> Benchmark:
+    """A general experiment to test all benchmark methods on a signal.
     
     Arguments:
-    signal -- faultevent.signal.Signal object containing vibrations in shaft domain
-    resid -- faultevent.signal.Signal object containing AR residuals in shaft domain
-    ordc -- characteristic fault order
-    medfiltsize -- MED filter size
-    sknbands -- number of frequency bands for SK estimation
-    
-    Keyword arguments:
-    use_irfs_eosp -- whether to use EOSP estimates from IRFS method or
-    peak detection algorithm
+    dataname -- name of the dataset
+    signal_id -- ID of the signal in the datasets dataloader
+    params -- benchmark parameters defined in `BenchmarkParams`
     """
 
-    ordmin = ordc-.5
-    ordmax = ordc+.5
+    ordmin = params.ordc-.5
+    ordmax = params.ordc+.5
 
-    score_med_results = algorithms.score_med(resid, medfiltsize, [(ordmin, ordmax)])
-    residf = score_med_results["filtered"]
+    dl = data.dataloader(dataname)
+
+    armodel = util.get_armodel(dataname)
+    mlmodel = util.get_mlmodel(dataname)
+
+    signalt = dl[signal_id].vib
+    signal = sig.Signal.from_uniform_samples(signalt.y, (params.rpm/60)/signalt.fs)
+
+    resid_ar = armodel.residuals(signal)
+    # resid_ml = resid_ar # for verifying method still works like before
+    resid_ml = mlmodel.residuals(signal)
+
+    # score_med_results = algorithms.score_med(resid_ml, params.med_filtsize, [(ordmin, ordmax)])
+    # residf = score_med_results["filtered"]
 
     # IRFS method.
-    spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
-    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, sigsize, sigshift,
-                           vibration=signal, vibration_sigsize=vibration_sigsize)
+    spos1 = algorithms.enedetloc(resid_ml, search_intervals=[(ordmin, ordmax)])
+    irfs = algorithms.irfs(resid_ml, spos1, ordmin, ordmax, params.siglen, params.sigshift,
+                           vibration=signal, vibration_sigsize=params.siglen_vib)
     irfs_result, = deque(irfs, maxlen=1)
-
-    irfs_out = np.correlate(resid.y, irfs_result["sigest"], mode="valid")
-    irfs_filt = sig.Signal(irfs_out, resid.x[:-len(irfs_result["sigest"])+1],
-                        resid.uniform_samples)
+    # TODO: See if we can use the EOSPs output by `algorithms.irfs` directly
+    # in `detect_and_sort` instead of what we do in the following lines
+    irfs_out = np.correlate(resid_ar.y, irfs_result["sigest"], mode="valid")
+    irfs_filt = sig.Signal(irfs_out, resid_ar.x[:-len(irfs_result["sigest"])+1],
+                        resid_ar.uniform_samples)
     def irfs_weight(spos):
         z = evt.map_circle(irfs_result["ordf"], spos)
         u = scipy.stats.vonmises.pdf(z, irfs_result["kappa"], loc=irfs_result["mu"])
         return u
     
-    irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, ordc, ordmin, ordmax, weightfunc=irfs_weight)
+    irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, params.ordc, ordmin, ordmax, weightfunc=irfs_weight)
     
     # MED method. Signal is filtered using filter obtained by MED.
-    med_filt = algorithms.med_filter(signal, medfiltsize, "impulse")
-    med_ndets, med_mags = detect_and_sort(med_filt, ordc, ordmin, ordmax)
+    med_filt = algorithms.med_filter(signal, params.med_filtsize, "impulse")
+    med_ndets, med_mags = detect_and_sort(med_filt, params.ordc, ordmin, ordmax)
 
     # AR-MED method. Residuals are filtered using filter obtained by AR-MED.
-    armed_filt = algorithms.med_filter(resid, medfiltsize, "impulse")
-    armed_ndets, armed_mags = detect_and_sort(armed_filt, ordc, ordmin, ordmax)
+    armed_filt = algorithms.med_filter(resid_ar, params.med_filtsize, "impulse")
+    armed_ndets, armed_mags = detect_and_sort(armed_filt, params.ordc, ordmin, ordmax)
 
     # SK method. Signal is filtered using filter maximising SK.
-    sk_filt = algorithms.skfilt(signal, sknperseg)
-    sk_ndets, sk_mags = detect_and_sort(sk_filt, ordc, ordmin, ordmax)
+    sk_filt = algorithms.skfilt(signal, params.sk_nperseg)
+    sk_ndets, sk_mags = detect_and_sort(sk_filt, params.ordc, ordmin, ordmax)
 
     # AR-SK method. Residuals are filtered using filter maximising SK.
-    arsk_filt = algorithms.skfilt(resid, sknperseg)
-    arsk_ndets, arsk_mags = detect_and_sort(arsk_filt, ordc, ordmin, ordmax)
+    arsk_filt = algorithms.skfilt(resid_ar, params.sk_nperseg)
+    arsk_ndets, arsk_mags = detect_and_sort(arsk_filt, params.ordc, ordmin, ordmax)
 
     # Compound method from
     # https://www.papers.phmsociety.org/index.php/phmconf/article/download/3522/phmc_23_3522
-    cm_filt = algorithms.skfilt(armed_filt, sknperseg)
-    cm_ndets, cm_mags = detect_and_sort(cm_filt, ordc, ordmin, ordmax)
+    cm_filt = algorithms.skfilt(armed_filt, params.sk_nperseg)
+    cm_ndets, cm_mags = detect_and_sort(cm_filt, params.ordc, ordmin, ordmax)
 
-    events_max = ordc*signal.x[-1]
+    events_max = params.ordc*signal.x[-1]
 
     results: Benchmark = {
-        "data_name": data_name,
-        "ordc": ordc,
+        "signal_id": signal_id,
+        "ordc": params.ordc,
         "events_max": events_max,
         "irfs_result": irfs_result,
         "method_outputs": [
@@ -172,189 +189,71 @@ def benchmark_experiment(data_name, sigsize, sigshift, signal, resid, ordc,
     return results
 
 
+def bmexp(args):
+    """With `ProcessPoolExecutor`, functions must be called using its
+    `map` method, meaning arguments must be provided as a single
+    object. To preserve the original signature of
+    `benchmark_experiment`, this function may be used with
+    `ProcessPoolExecutor.map` and the arguments provided as a tuple."""
+    dataname, signal_id, params = args
+    return benchmark_experiment(dataname, signal_id, params)
 
-class ExperimentResults(TypedDict):
-    ar_model: sig.ARModel
-    dataloader: faultevent.data.DataLoader
-    benchmarks: Sequence[Benchmark]
-
-
-
-def ex_uia(process_kwargs):
-    file_path = process_kwargs["file_path"]
-    dl = process_kwargs["dl"]
-    model = process_kwargs["model"]
-    print("Working on file "+str(file_path))
-    rpm = 1000 # angular speed in rpm
-    fs = 51200 # sample frequency
-    mf = dl[file_path]
-    signalt = mf.vib # signal in time domain
-    residt = model.residuals(signalt) # AR residuals in time domain
-
-    # Angular speed of these measurements are approximately constant,
-    # no resampling is applied.
-    signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
-    resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
-    kwargs = {
-        "data_name": str(pathlib.Path(*file_path.parts[-2:])),
-        "sigsize": 400,
-        "vibration_sigsize": 600,
-        "sigshift": -150,
-        "signal": signal,
-        "resid": resid,
-        "ordc": 6.7087166,
-        "medfiltsize": 100,
-        "sknperseg": 1000,
-    }
-    return benchmark_experiment(**kwargs)
 
 
 @experiment(output_path)
-def uia() -> ExperimentResults:
-    dl = data.dataloader("uia")
-
-    mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
-    model = sig.ARModel.from_signal(mh.vib[:10000], 117) # AR model
-
+def uia() -> list[Benchmark]:
+    cfg = load_config()
+    data_path = data.data_path(data.DataName.UIA)
+    benchmark_params = BenchmarkParams(1000, 400, -150, 6.7087166, 100, 1000, 600)
     ex_args = []
-    for i, file_path in enumerate(dl.path.glob("y2016-m09-d24/*.h5")):
+    for file_path in data_path.glob("y2016-m09-d24/*.h5"):
         if not "1000rpm" in str(file_path):
-            continue
-        ex_args.append({
-            "file_path": file_path,
-            "model": model,
-            "dl": dl,
-        })
+            continue # we select only the 1000rpm signals
+        ex_args.append((data.DataName.UIA, file_path, benchmark_params))
 
-    with ProcessPoolExecutor() as executor:
-        benchmarks = list(executor.map(ex_uia, ex_args))
+    with ProcessPoolExecutor(cfg.get("max_workers", None)) as executor:
+        benchmarks = list(executor.map(bmexp, ex_args))
     
-    return {
-        "ar_model": model,
-        "dataloader": dl,
-        "benchmarks": benchmarks,
-    }
-
-
-def ex_unsw(process_kwargs):
-    file_path = process_kwargs["file_path"]
-    dl = process_kwargs["dl"]
-    model = process_kwargs["model"]
-    print("Working on file "+str(file_path))
-
-    mf = dl[file_path]
-    
-    angfhz = 6 # angular frequency in Hz
-    fs = 51200 # sample frequency
-    signalt = mf.vib # signal in time domain
-    residt = model.residuals(signalt) # AR residuals in time domain
-
-    # Angular speed of these measurements are approximately constant,
-    # no resampling is applied.
-    signal = sig.Signal.from_uniform_samples(signalt.y, angfhz/fs)
-    resid = sig.Signal.from_uniform_samples(residt.y, angfhz/fs)
-    kwargs = {
-        "data_name": str(file_path),
-        "sigsize": 200,
-        "vibration_sigsize": 600,
-        "sigshift": -100,
-        "signal": signal,
-        "resid": resid,
-        "ordc": 3.56,
-        "medfiltsize": 100,
-        "sknperseg": 256,
-    }
-    return benchmark_experiment(**kwargs)
+    return benchmarks
 
 
 @experiment(output_path)
-def unsw() -> ExperimentResults:
-    dl = data.dataloader("unsw")
-
-    mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
-    model = sig.ARModel.from_signal(mh.vib[:10000], 41)
-
+def unsw() -> list[Benchmark]:
+    cfg = load_config()
+    data_path = data.data_path(data.DataName.UIA)
+    benchmark_params = BenchmarkParams(360, 200, -100, 3.56, 100, 256, 600)
     ex_args =  []
-    for file_path in dl.path.glob("Test 1/6Hz/*.mat"):
-        ex_args.append({
-            "file_path": file_path,
-            "model": model,
-            "dl": dl,
-        })
-    with ProcessPoolExecutor(6) as executor:
-        benchmarks = list(executor.map(ex_unsw, ex_args))
-    return {
-        "dataloader": dl,
-        "ar_model": model,
-        "benchmarks": benchmarks,
-    }
-
-
-def ex_cwru(process_kwargs):
-    dl = process_kwargs["dl"]
-    model = process_kwargs["model"]
-    signal_id = process_kwargs["id"]
-    ordc = process_kwargs["ordc"]
-    rpm = process_kwargs["rpm"]
-    fs = dl.info["fs"]
-
-    mf = dl[signal_id]
-    signalt = mf.vib
-    residt = model.residuals(signalt)
-
-    signal = sig.Signal.from_uniform_samples(signalt.y, (rpm/60)/fs)
-    resid = sig.Signal.from_uniform_samples(residt.y, (rpm/60)/fs)
-    kwargs = {
-        "data_name": str(signal_id),
-        "sigsize": 400,
-        "vibration_sigsize": 600,
-        "sigshift": -150,
-        "signal": signal,
-        "resid": resid,
-        "ordc": ordc,
-        "medfiltsize": 100,
-        "sknperseg": 256,
-    }
-    try:
-        return benchmark_experiment(**kwargs)
-    except:
-        print(f"signal id {signal_id} was not processed successfully")
-        return
+    for file_path in data_path.glob("Test 1/6Hz/*.mat"):
+        ex_args.append((data.DataName.UNSW, file_path, benchmark_params))
+    with ProcessPoolExecutor(cfg.get("max_workers", None)) as executor:
+        benchmarks = list(executor.map(bmexp, ex_args))
+    return benchmarks
 
 
 @experiment(output_path)
-def cwru() -> ExperimentResults:
-    dl = data.dataloader("cwru")
-
-    mh = dl["100"]
-    model = sig.ARModel.from_signal(mh.vib[:10000], 75)
-    
+def cwru() -> list[Benchmark]:
+    from data.cwru import Diagnostics, fault
+    cfg = load_config()
+    dl = data.dataloader(data.DataName.CWRU)
     ex_args = []
     for dl_entry in dl.info["data"]:
-        match cwru.fault(dl_entry["name"])[0]:
-            # case cwru.Diagnostics.OUTER:
+        match fault(dl_entry["name"])[0]:
+            # case Diagnostics.OUTER:
             #     ordc = 3.5848
-            case cwru.Diagnostics.INNER:
+            case Diagnostics.INNER:
                 ordc = 5.4152
             case _:
                 continue
-        
-        ex_args.append({
-            "id": dl_entry["id"],
-            "model": model,
-            "dl": dl,
-            "ordc": ordc,
-            "rpm": dl_entry["rpm"],
-        })
-    
-    with ProcessPoolExecutor() as executor:
-        benchmarks = list(executor.map(ex_cwru, ex_args))
 
-    return {
-        "ar_model": model,
-        "dataloader": dl,
-        "benchmarks": benchmarks,
-    }
+        benchmark_params = BenchmarkParams(dl_entry["rpm"], 400, -150, ordc,
+                                           100, 256, 600)
+        
+        ex_args.append((data.DataName.CWRU, dl_entry["id"], benchmark_params))
+    
+    with ProcessPoolExecutor(cfg.get("max_workers", None)) as executor:
+        benchmarks = list(executor.map(bmexp, ex_args))
+
+    return benchmarks
 
 
 def select_benchmarks(benchmarks: list[Benchmark],
@@ -375,7 +274,8 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
                        dx=1.0):
     list_benchmarks = list(filter(lambda r: r is not None, list_benchmarks))
     if include_names:
-        results_to_show = list(filter(lambda r: r["data_name"] in include_names, list_benchmarks))
+        results_to_show = list(filter(
+            lambda r: r["signal_id"] in include_names, list_benchmarks))
     elif include_idx:
         results_to_show = np.take(list_benchmarks, include_idx)
     else:
@@ -422,40 +322,35 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
 
 
 @presentation(uia)
-def present_uia(results: ExperimentResults):
-    present_benchmarks(results["benchmarks"], include_idx=[2, 3, 4],
-                       dx=1/51200)
+def present_uia(results: list[Benchmark]):
+    present_benchmarks(results, include_idx=[2, 3, 4], dx=1/51200)
 
 
 @presentation(unsw)
-def present_unsw(results: ExperimentResults):
-    present_benchmarks(results["benchmarks"], include_idx=[11, 12, 13],
-                       dx=1/51200)
+def present_unsw(results: list[Benchmark]):
+    present_benchmarks(results, include_idx=[11, 12, 13], dx=1/51200)
 
 
 @presentation(cwru)
-def present_cwru(results: ExperimentResults):
-    dl = results["dataloader"]
-    fs = dl.info["fs"]
-    present_benchmarks(results["benchmarks"],
-                       include_names=["175", "176", "215"], dx=1/fs)
+def present_cwru(results: list[Benchmark]):
+    present_benchmarks(results, include_names=["175", "176", "215"], dx=1/48000)
 
 
 @presentation(uia, unsw, cwru)
-def present_all_labeled(list_results: Sequence[ExperimentResults]):
-    for results_ in list_results:
-        present_benchmarks(results_["benchmarks"], show_names=True)
+def present_all_labeled(list_results: list[list[Benchmark]]):
+    for results in list_results:
+        present_benchmarks(results, show_names=True)
 
 
 def present_stacked_signatures(benchmark: Benchmark,
-                               dl: faultevent.data.DataLoader,
-                               ar_model: sig.ARModel,
+                               dataname: data.DataName,
                                idx_eosp: Sequence[int],
                                rpm: float,
                                fs: float):
-
-    vibt = dl[benchmark["data_name"]].vib
-    rest = ar_model.residuals(vibt)
+    dl = data.dataloader(dataname)
+    vibt = dl[benchmark["signal_id"]].vib
+    model = util.get_mlmodel(dataname)
+    rest = model.residuals(vibt)
     vib = sig.Signal(vibt.y, vibt.x*rpm/60, uniform_samples=vibt.uniform_samples)
     eosp = benchmark["irfs_result"]["eosp"]
     dx = 1/fs
@@ -494,17 +389,14 @@ def present_stacked_signatures(benchmark: Benchmark,
 
 
 @presentation(uia)
-def present_uia_stacked(results: ExperimentResults):
-    benchmark = select_benchmarks(results["benchmarks"], include_idx=[2])[0]
-    present_stacked_signatures(benchmark=benchmark, dl=results["dataloader"],
-                               ar_model=results["ar_model"], idx_eosp=range(4, 8),
-                               rpm=1000, fs=51200)
+def present_uia_stacked(results: list[Benchmark]):
+    benchmark = select_benchmarks(results, include_idx=[2])[0]
+    present_stacked_signatures(benchmark=benchmark, dataname=data.DataName.UIA,
+                               idx_eosp=range(4, 8), rpm=1000, fs=51200)
 
 
 @presentation(unsw)
-def present_unsw_stacked(results: ExperimentResults):
-    benchmark = select_benchmarks(results["benchmarks"], include_idx=[11])[0]
-    dx = 6/51200
-    present_stacked_signatures(benchmark=benchmark, dl=results["dataloader"],
-                               ar_model=results["ar_model"], idx_eosp=range(4),
-                               rpm=360, fs=51200)
+def present_unsw_stacked(results: list[Benchmark]):
+    benchmark = select_benchmarks(results, include_idx=[11])[0]
+    present_stacked_signatures(benchmark=benchmark, dataname=data.DataName.UNSW,
+                               idx_eosp=range(4), rpm=360, fs=51200)

@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import TypedDict
-from enum import StrEnum, auto
+from enum import StrEnum
 import json
 import numpy as np
 from scipy.io import loadmat
@@ -35,13 +35,12 @@ class CWRUDataLoader(DataLoader):
         channel_base = f"X{info['id']}"
         x = np.squeeze(mat[channel_base+"_DE_time"])
         x -= np.mean(x)
-        tx = np.arange(len(x))/self.info["fs"]
-        vib = Signal(x, tx)
+        vib = Signal.from_uniform_samples(x, 1/self.info["fs"])
 
         t_end = len(x)/self.info["fs"]
         s = [0, t_end*info["rpm"]/60]
         ts = [0, t_end]
-        pos = Signal(s, ts)
+        pos = Signal(s, ts, uniform_samples=True)
 
         return Measurement(vib, pos)
 

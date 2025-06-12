@@ -1,30 +1,22 @@
-from typing import TypedDict, NotRequired, Literal
+from typing import TypedDict, NotRequired
 from enum import StrEnum
-import tomllib
-from functools import cache
+from pathlib import Path
 from .uia import UiADataLoader
 from .unsw import UNSWDataLoader
 from .cwru import CWRUDataLoader
 
+from config import load_config
 
-class Config(TypedDict):
+class DatasetConfig(TypedDict):
     uia_path: NotRequired[str]
     unsw_path: NotRequired[str]
     cwru_path: NotRequired[str]
 
 
-@cache
-def load_config(path):
-    global config
-    with open(path, "rb") as fp:
-        config = tomllib.load(fp)
-    return config
-
-
 def require_config(f, path="./config.toml"):
     config = load_config(path)
     def wrap(name: DataName):
-        return f(config, name)
+        return f(config["data"], name)
     return wrap
 
 
@@ -35,19 +27,19 @@ class DataName(StrEnum):
 
 
 @require_config
-def data_path(config: Config, name: DataName) -> str:
+def data_path(config: DatasetConfig, name: DataName) -> Path:
     match name:
         case DataName.UIA:
-            dp = config["data"].get("uia", None)
+            dp = config.get(DataName.UIA, None)
         case DataName.UNSW:
-            dp = config["data"].get("unsw", None)
+            dp = config.get(DataName.UNSW, None)
         case DataName.CWRU:
-            dp = config["data"].get("cwru", None)
+            dp = config.get(DataName.CWRU, None)
         case _:
             raise ValueError("dataset name not recognized")
     if dp is None:
         raise ValueError("dataset path not configured")
-    return dp
+    return Path(dp)
 
 
 def dataloader(name: DataName):
