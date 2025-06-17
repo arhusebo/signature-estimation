@@ -2,25 +2,28 @@ from multiprocessing import Pool
 from typing import TypedDict, Callable, NotRequired
 from collections import deque
 from collections.abc import Sequence
-from functools import cache
 
 import numpy as np
 import numpy.typing as npt
-import scipy.linalg
 import scipy.signal
 import matplotlib
 import matplotlib.pyplot as plt
 
-from faultevent.signal import Signal, ARModel
+from faultevent.signal import Signal
 from faultevent.event import event_spectrum
+
 import algorithms
+import data
+import util
+from config import load_config
 
 from simsim import experiment, presentation
 
-
+cfg = load_config()
 
 OUTPUT_PATH = "results/synth"
-MC_ITERATIONS = 30
+MC_ITERATIONS = cfg.get("mc_iterations", 30)
+MAX_WORKERS = cfg.get("mc_iterations", 30)
 
 
 
@@ -42,22 +45,26 @@ class InterferenceDescriptor(TypedDict):
     bandwidth: float
 
 
-class ResidualDescriptor(TypedDict):
+class HealthyComponentDescriptor(TypedDict):
+    dataname: data.DataName
+    signal_id: str
+
+
+class VibrationDescriptor(TypedDict):
     length: int
     sample_frequency: float
     shaft_frequency: float
+    healthy_component: HealthyComponentDescriptor
     faults: Sequence[FaultDescriptor]
     snr: NotRequired[float]
-    snir: NotRequired[float]
     anomaly: NotRequired[AnomalyDescriptor]
     interference: NotRequired[InterferenceDescriptor]
 
 
-def avg_fault_period(residual: ResidualDescriptor,
-                         fault_index: int = 0) -> float:
+def avg_fault_period(desc: VibrationDescriptor, fault_index: int = 0) -> float:
     """Computes the average number of shaft revolutions between fault event"""
-    return (residual["sample_frequency"]
-            /residual["shaft_frequency"])/residual["faults"][fault_index]["ord"]
+    return (desc["sample_frequency"]
+            /desc["shaft_frequency"])/desc["faults"][fault_index]["ord"]
 
 
 #common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
@@ -65,10 +72,14 @@ DEFAULT_ANOMALY_SIGNATURE = lambda n: (n>=0)*np.sinc(n/2+1)
 def DEFAULT_FAULT_SIGNATURE(n):
     return (n>=0)*np.sinc(n/8+1)
 
-COMMON_RESIDUAL: ResidualDescriptor = {
+COMMON_RESIDUAL: VibrationDescriptor = {
     "length": 100000,
     "sample_frequency": 51200,
     "shaft_frequency": 1000/60,
+    "healthy_component": {
+        "dataname": "unsw",
+        "signal_id": "Test 1/6Hz/vib_000002663_06.mat",
+    },
     "faults": [
         {
             "ord": 5.0,
@@ -85,7 +96,7 @@ def sigtilde(signat: Callable[[int], float], sigloc: Sequence[int], n: int):
     return np.sum([signat(np.arange(n)-n0) for n0 in sigloc], axis=0)
 
 
-def generate_resid(residual: ResidualDescriptor, seed=0):
+def generate_vibration(desc: VibrationDescriptor, seed=0):
     """Generates a residual signal according to the provided
     ResidualDescriptor. Always generates the same result unless a
     different value of 'seed' is used.
@@ -94,41 +105,42 @@ def generate_resid(residual: ResidualDescriptor, seed=0):
     labels and EOSPs.
     """
     rng = np.random.default_rng(seed)
-    resid = np.zeros((residual["length"]), dtype=float)
+    resid = np.zeros((desc["length"]), dtype=float)
     eosp_ = []
     elbl_ = []
 
     # Generate fault signatures
-    for i, fault in enumerate(residual["faults"]):
-        df = (residual["sample_frequency"]
-              /residual["shaft_frequency"])/fault["ord"]
-        eosp = np.arange(0, residual["length"], df, dtype=float)
+    for i, fault in enumerate(desc["faults"]):
+        df = (desc["sample_frequency"]
+              /desc["shaft_frequency"])/fault["ord"]
+        eosp = np.arange(0, desc["length"], df, dtype=float)
         eosp += rng.standard_normal(len(eosp))*fault["std"]
-        resid += sigtilde(fault["signature"], eosp, residual["length"])
+        resid += sigtilde(fault["signature"], eosp, desc["length"])
 
         eosp_.append(eosp)
         elbl_.append(np.ones_like(eosp, dtype=int)+i)
 
     # Generate anomaly signatures
-    if anomaly := residual.get("anomaly", None):
-        eosp = rng.uniform(0, residual["length"], anomaly["amount"])
-        resid += sigtilde(anomaly["signature"], eosp, residual["length"])
+    if anomaly := desc.get("anomaly", None):
+        eosp = rng.uniform(0, desc["length"], anomaly["amount"])
+        resid += sigtilde(anomaly["signature"], eosp, desc["length"])
 
         eosp_.append(eosp)
         elbl_.append(np.zeros_like(eosp, dtype=int))
     
+    # Noise (healthy) component
+    dl = data.dataloader(desc["healthy_component"]["dataname"])
+    noise = dl[desc["healthy_component"]["signal_id"]].vib.y[:desc["length"]]
+
+    pow_resid = np.var(resid)
+    if snr := desc.get("snr", None):
+        assert snr > 0.0
+        pow_noise = np.var(noise)
+        pow_resid = pow_noise*snr
+        resid = np.sqrt(pow_resid)*resid/np.std(resid)
     
-    sigpow = np.var(resid) # total signatures power
-
-    # Generate signal noise
-    if snr := residual.get("snr", None):
-        noisepow = sigpow/snr
-        noise = rng.standard_normal(residual["length"]) * np.sqrt(noisepow)
-    else:
-        noise = np.zeros_like(resid)
-
-    # Generate random interference componen
-    if interference := residual.get("interference", None):
+    # Generate random interference component
+    if interference := desc.get("interference", None):
         Wn_low = interference["central_frequency"] - interference["bandwidth"]/2
         Wn_high = interference["central_frequency"] + interference["bandwidth"]/2
         interf = rng.laplace(0, 1, resid.shape)
@@ -136,27 +148,16 @@ def generate_resid(residual: ResidualDescriptor, seed=0):
         interf_sos = scipy.signal.butter(4, Wn=(Wn_low, Wn_high),
                                          btype="bandpass",
                                          output="sos",
-                                         fs=residual["sample_frequency"],)
+                                         fs=desc["sample_frequency"],)
         interf = scipy.signal.sosfilt(interf_sos, interf)
-        intpow = sigpow/interference["sir"]
-        interf *= np.sqrt(intpow)/np.std(interf)
+        pow_interf = pow_resid/interference["sir"]
+        interf *= np.sqrt(pow_interf)/np.std(interf)
     else:
         interf = np.zeros_like(resid)
 
-    ni = noise + interf # noise and interference
-    if (snir := residual.get("snir", None)) and (snr or interference):
-        # SNIR = var(resid) / var(noise + interf)
-        # var(noise + interf) = var(resid) / SNIR
-        # std(noise + interf) = sqrt(var(resid) / SNIR)
-        # std(noise + interf) = std(resid) / sqrt(SNIR)
-        pow_ni = sigpow/snir
-        ni *= np.sqrt(pow_ni)/np.std(ni)
-    
-    resid += ni
-
     # Instantiate and return signal object
-    dx = 1/(residual["sample_frequency"]/residual["shaft_frequency"])
-    out = Signal.from_uniform_samples(resid, dx)
+    dx = 1/(desc["sample_frequency"]/desc["shaft_frequency"])
+    out = Signal.from_uniform_samples(noise+interf+resid, dx)
     event_shaft_positions = np.concatenate(eosp_)*dx
     event_labels = np.concatenate(elbl_)
     return {
@@ -164,17 +165,6 @@ def generate_resid(residual: ResidualDescriptor, seed=0):
         "eosp": event_shaft_positions,
         "event_labels": event_labels,
     }
-
-
-@cache
-def get_armodel() -> ARModel:
-    """Fit an AR model for generating signals from synthetic residuals"""
-    from data.uia import UiADataLoader
-    from data import uia_path
-    dl = UiADataLoader(uia_path)
-
-    mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
-    return ARModel.from_signal(mh.vib[:10000], 117) # AR model
 
 
 def estimate_signat(signal: Signal, indices: Sequence[int],
@@ -202,15 +192,14 @@ class BenchmarkResults(TypedDict):
     event_labels: Sequence[int]
 
 
-def benchmark(residual: ResidualDescriptor,
+def benchmark(residual: VibrationDescriptor,
               fault_index: int = 0,
               seed: int = 0,
               sigestlen: int = 400,
               sigestshift: int = -150,
               medfiltsize: int = 100,) -> BenchmarkResults:
 
-    genres=generate_resid(residual, seed=seed)
-    resid = genres["signal"]
+    genres = generate_vibration(residual, seed=seed)
     fault = residual["faults"][fault_index]
     avg_event_period = avg_fault_period(residual, fault_index)
     ordc = fault["ord"]
@@ -219,20 +208,29 @@ def benchmark(residual: ResidualDescriptor,
     ordmin = ordc-.5
     ordmax = ordc+.5
 
-    score_med_results = algorithms.score_med(resid, medfiltsize, [(ordmin, ordmax)])
-    residf = score_med_results["filtered"]
 
-    vib = get_armodel().process(resid)
+    dataname = residual["healthy_component"]["dataname"]
+    # vib = util.get_armodel(dataname).process(genres["signal"])
+    vib = genres["signal"]
+
+    armodel = util.get_armodel(dataname)
+    mlmodel = util.get_mlmodel(dataname)
+
+    resid_ar = armodel.residuals(vib)
+    resid_ml = mlmodel.residuals(vib)
+
+    # score_med_results = algorithms.score_med(resid_ml, medfiltsize, [(ordmin, ordmax)])
+    # residf = score_med_results["filtered"]
 
     # IRFS method
-    spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
-    irfs = algorithms.irfs(resid, spos1, ordmin, ordmax, sigestlen, sigestshift,
+    spos1 = algorithms.enedetloc(resid_ml, search_intervals=[(ordmin, ordmax)])
+    irfs = algorithms.irfs(resid_ml, spos1, ordmin, ordmax, sigestlen, sigestshift,
                            vibration=vib)
     irfs_result, = deque(irfs, maxlen=1)
 
-    irfs_out = np.correlate(resid.y, irfs_result["sigest"], mode="valid")
-    irfs_filt = Signal(irfs_out, resid.x[:-len(irfs_result["sigest"])+1],
-                        resid.uniform_samples)
+    # irfs_out = np.correlate(resid_ml.y, irfs_result["sigest"], mode="valid")
+    # irfs_filt = Signal(irfs_out, resid_ml.x[:-len(irfs_result["sigest"])+1],
+    #                     resid_ml.uniform_samples)
 
     # estimate signature using MED and peak detection
     medout = algorithms.med_filter(vib, medfiltsize, "impulse")
@@ -247,13 +245,13 @@ def benchmark(residual: ResidualDescriptor,
     sigest_sk = estimate_signat(vib, skpeaks, sigestlen, sigestshift)
 
     # estimate signature using AR-MED and peak detection
-    armedout = algorithms.med_filter(resid, medfiltsize, "impulse")
+    armedout = algorithms.med_filter(resid_ar, medfiltsize, "impulse")
     armedenv = abs(scipy.signal.hilbert(armedout.y))
     armedpeaks, _ = scipy.signal.find_peaks(armedenv, distance=avg_event_period/2)
     sigest_armed = estimate_signat(vib, armedpeaks, sigestlen, sigestshift)
     
     # estimate signature using AR-SK and peak detection
-    arskout = algorithms.skfilt(resid)
+    arskout = algorithms.skfilt(resid_ar)
     arskenv = abs(arskout.y)
     arskpeaks, _ = scipy.signal.find_peaks(arskenv, distance=avg_event_period/2)
     sigest_arsk = estimate_signat(vib, arskpeaks, sigestlen, sigestshift)
@@ -287,7 +285,7 @@ def nmse_shift(sigest, sigtruefunc, shiftmax=100):
     sigest_ = sigest.copy()
     sigest_ /= np.linalg.norm(sigest_)
     siglen = len(sigest_)
-    sigtrue = get_armodel().process(
+    sigtrue = util.get_armodel("uia").process(
         Signal.from_uniform_samples(sigtruefunc(np.arange(siglen)))).y
     sigtrue /= np.linalg.norm(sigtrue)
 
@@ -311,12 +309,13 @@ def estimate_nmse(sigest, sigtruefunc, shiftmax=100):
     return nmse[idxmin], n[idxmin]
 
 
-def common_snr_experiment(snr, seed, n_anomalous):
+def common_snr_experiment(snr: float, seed: int, n_anomalous: int,
+                          dataname: data.DataName, signal_id: str):
     """General SNR experiment. This function is called by monte-carlo
     experiments using multiprocessing and therefore needs to be defined
     on module-level."""
-    
-    residual: ResidualDescriptor = COMMON_RESIDUAL.copy()
+
+    residual: VibrationDescriptor = COMMON_RESIDUAL.copy()
     residual["snr"] = snr
     residual["anomaly"] = {
         "amount": n_anomalous,
@@ -333,15 +332,18 @@ def common_snr_experiment(snr, seed, n_anomalous):
 def snr_monte_carlo(n_anomalous=0, mc_iterations=10):
     """For a set of SNR-values, runs the general snr experiment multiple
     times using multiprocessing."""
+    cfg = load_config()
     
     snr_to_eval = np.logspace(-2, 0, 10).tolist()
     list_args = []
     for snr in snr_to_eval:
         for seed in range(mc_iterations):
-            args = (snr, seed, n_anomalous)
+            args = (snr, seed, n_anomalous, "unsw",
+                    "Test 1/6Hz/vib_000002663_06.mat")
+                    # "y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5")
             list_args.append(args)
 
-    with Pool(6) as p:
+    with Pool(cfg.get(MAX_WORKERS, None)) as p:
         rmse = p.starmap(common_snr_experiment, list_args)
     
     return snr_to_eval, rmse
@@ -356,7 +358,7 @@ def ex_snr():
 @experiment(OUTPUT_PATH, json=True)
 def ex_snr_anomalous():
     """Synthetic data experiment B - Anomalous events present"""
-    return snr_monte_carlo(n_anomalous=100, mc_iterations=MC_ITERATIONS)
+    return snr_monte_carlo(n_anomalous=200, mc_iterations=MC_ITERATIONS)
 
 
 @presentation(ex_snr, ex_snr_anomalous)
@@ -394,7 +396,7 @@ def interference_experiment(interference: InterferenceDescriptor, seed=0):
     by monte-carlo experiments using multiprocessing and therefore needs
     to be defined on module-level."""
 
-    residual: ResidualDescriptor = COMMON_RESIDUAL.copy()
+    residual: VibrationDescriptor = COMMON_RESIDUAL.copy()
     residual["snr"] = 1.0
     residual["interference"] = interference
 
@@ -426,7 +428,7 @@ def ex_sir():
             }
             args.append((interference, seed))
 
-    with Pool(6) as p:
+    with Pool(MAX_WORKERS) as p:
         rmse = p.starmap(interference_experiment, args)
     
     return sir, interf_cfreq, rmse
@@ -590,7 +592,7 @@ def eosp_metric(ordf: float,
 
 
 def common_eosp_experiment(snr, seed):
-    residual: ResidualDescriptor = COMMON_RESIDUAL.copy()
+    residual: VibrationDescriptor = COMMON_RESIDUAL.copy()
     residual["snr"] = snr
     results = benchmark(residual, seed=seed)
     eosp_true = results["eosp"][results["event_labels"]==1]
@@ -646,12 +648,12 @@ def pr_eosp(results):
 
 # --- Diagnosis experiments (unused) ------------------------------------------
 
-def diagnosis_benchmark(residual: ResidualDescriptor,
+def diagnosis_benchmark(residual: VibrationDescriptor,
                         faults: algorithms.fault_search,
                         seed: int = 0,
                         medfiltsize=100):
     
-    resid = generate_resid(residual, seed=seed)
+    resid = generate_vibration(residual, seed=seed)
     
     search_intervals = faults.values()
     score_med_results = algorithms.score_med(resid, medfiltsize, search_intervals)
