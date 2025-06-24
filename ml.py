@@ -130,17 +130,18 @@ def batchify(x, siglen: int):
 
 
 def train(dataloader: DataLoader, signal_idx: Sequence, epochs: int,
-          siglen: int, savepath: str):
+          siglen: int, savepath: str, overwrite = False):
     
     model = Model()
     
     epoch = 0
-    try:
-        state = torch.load(savepath)
-        model.load_state_dict(state["model_state_dict"])
-        epoch = state["epoch"]+1
-    except Exception:
-        print("could not load model state")
+    if not overwrite:
+        try:
+            state = torch.load(savepath)
+            model.load_state_dict(state["model_state_dict"])
+            epoch = state["epoch"]+1
+        except Exception:
+                print("could not load model state")
 
     loss_fn = torch.nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -159,7 +160,7 @@ def train(dataloader: DataLoader, signal_idx: Sequence, epochs: int,
             optimizer.zero_grad()
 
             # model specifics
-            xb, _ = batchify(ax, siglen)
+            xb, _ = batchify(x, siglen)
             axb, _ = batchify(ax, siglen)
             yb = model(axb)
 
@@ -223,19 +224,28 @@ if __name__ == "__main__":
     not_implemented = NotImplementedError("program not implemented for this dataset")
 
     dl = data.dataloader(args.name)
+    data_path = data.data_path(args.name)
     signal_idx = []
     match type(dl):
+        
         case data.UiADataLoader:
-            glb = str(dl.path/"y2016-m09-d20")+"/*.h5"
-            signal_idx = [f for f in glob.glob(glb) if "1000rpm" in f]
+            exclude = ["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
+            signal_idx = filter(
+                    lambda x: "1000rpm" in x
+                    and not pathlib.Path(x) in map(pathlib.Path, exclude),
+                glob.iglob("y2016-m09-d20/*.h5", root_dir=data_path))
+        
         case data.UNSWDataLoader:
-            glb = str(dl.path/"Test 1/6Hz")+"/*.mat"
-            signal_idx = glob.glob(glb)[:10]
+            exclude = ["Test 1/6Hz/vib_000002663_06.mat"]
+            signal_idx = filter(
+                    lambda x: not pathlib.Path(x) in map(pathlib.Path, exclude),
+                itertools.islice(
+                    glob.iglob("Test 1/6Hz/*.mat", root_dir=data_path), 10))
+        
         case data.CWRUDataLoader:
-            signal_idx = ["097", "098", "099", "100"]
-            # raise not_implemented
+            signal_idx = ["097", "098", "100"] # "099" excluded
         case _:
             raise ValueError("dataloader not recognized")
-
+    
     savepath = model_filepath(args.name)
-    train(dl, signal_idx, args.epochs, args.len, savepath)
+    train(dl, list(signal_idx), args.epochs, args.len, savepath, overwrite=args.overwrite)
