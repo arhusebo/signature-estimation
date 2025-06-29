@@ -2,6 +2,7 @@ from multiprocessing import Pool
 from typing import TypedDict, Callable, NotRequired
 from collections import deque
 from collections.abc import Sequence
+import itertools
 
 import numpy as np
 import numpy.typing as npt
@@ -17,7 +18,7 @@ import data
 import util
 from config import load_config
 
-from simsim import experiment, presentation
+from simsim import experiment, presentation, ExperimentStatus
 
 cfg = load_config()
 
@@ -39,12 +40,6 @@ class AnomalyDescriptor(TypedDict):
     signature: Callable[[int], npt.ArrayLike]
 
 
-class InterferenceDescriptor(TypedDict):
-    sir: float
-    central_frequency: float
-    bandwidth: float
-
-
 class HealthyComponentDescriptor(TypedDict):
     dataname: data.DataName
     signal_id: str
@@ -58,7 +53,6 @@ class VibrationDescriptor(TypedDict):
     faults: Sequence[FaultDescriptor]
     snr: NotRequired[float]
     anomaly: NotRequired[AnomalyDescriptor]
-    interference: NotRequired[InterferenceDescriptor]
 
 
 def avg_fault_period(desc: VibrationDescriptor, fault_index: int = 0) -> float:
@@ -68,7 +62,9 @@ def avg_fault_period(desc: VibrationDescriptor, fault_index: int = 0) -> float:
 
 
 #common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
-DEFAULT_ANOMALY_SIGNATURE = lambda n: (n>=0)*np.sinc(n/2+1)
+def DEFAULT_ANOMALY_SIGNATURE(n):
+    return (n>=0)*np.sinc(n/2+1)
+
 def DEFAULT_FAULT_SIGNATURE(n):
     return (n>=0)*np.sinc(n/8+1)
 
@@ -129,8 +125,12 @@ def generate_vibration(desc: VibrationDescriptor, seed=0):
         elbl_.append(np.zeros_like(eosp, dtype=int))
     
     # Noise (healthy) component
+    # A random slice is extracted from the signal `signal_id` of dataset
+    # `dataname` and used as the noise component of the synthetic signal.
     dl = data.dataloader(desc["healthy_component"]["dataname"])
-    noise = dl[desc["healthy_component"]["signal_id"]].vib.y[:desc["length"]]
+    noise_full = dl[desc["healthy_component"]["signal_id"]].vib.y
+    idx0 = rng.choice(len(noise_full)-desc["length"])
+    noise = noise_full[idx0:idx0+desc["length"]]
 
     pow_resid = np.var(resid)
     if snr := desc.get("snr", None):
@@ -138,26 +138,10 @@ def generate_vibration(desc: VibrationDescriptor, seed=0):
         pow_noise = np.var(noise)
         pow_resid = pow_noise*snr
         resid = np.sqrt(pow_resid)*resid/np.std(resid)
-    
-    # Generate random interference component
-    if interference := desc.get("interference", None):
-        Wn_low = interference["central_frequency"] - interference["bandwidth"]/2
-        Wn_high = interference["central_frequency"] + interference["bandwidth"]/2
-        interf = rng.laplace(0, 1, resid.shape)
-        interf = np.sign(interf)*interf**2
-        interf_sos = scipy.signal.butter(4, Wn=(Wn_low, Wn_high),
-                                         btype="bandpass",
-                                         output="sos",
-                                         fs=desc["sample_frequency"],)
-        interf = scipy.signal.sosfilt(interf_sos, interf)
-        pow_interf = pow_resid/interference["sir"]
-        interf *= np.sqrt(pow_interf)/np.std(interf)
-    else:
-        interf = np.zeros_like(resid)
 
     # Instantiate and return signal object
     dx = 1/(desc["sample_frequency"]/desc["shaft_frequency"])
-    out = Signal.from_uniform_samples(noise+interf+resid, dx)
+    out = Signal.from_uniform_samples(noise + resid, dx)
     event_shaft_positions = np.concatenate(eosp_)*dx
     event_labels = np.concatenate(elbl_)
     return {
@@ -192,16 +176,16 @@ class BenchmarkResults(TypedDict):
     event_labels: Sequence[int]
 
 
-def benchmark(residual: VibrationDescriptor,
+def benchmark(desc: VibrationDescriptor,
               fault_index: int = 0,
               seed: int = 0,
               sigestlen: int = 400,
               sigestshift: int = -150,
               medfiltsize: int = 100,) -> BenchmarkResults:
 
-    genres = generate_vibration(residual, seed=seed)
-    fault = residual["faults"][fault_index]
-    avg_event_period = avg_fault_period(residual, fault_index)
+    genres = generate_vibration(desc, seed=seed)
+    fault = desc["faults"][fault_index]
+    avg_event_period = avg_fault_period(desc, fault_index)
     ordc = fault["ord"]
     
     ordc = ordc
@@ -209,7 +193,7 @@ def benchmark(residual: VibrationDescriptor,
     ordmax = ordc+.5
 
 
-    dataname = residual["healthy_component"]["dataname"]
+    dataname = desc["healthy_component"]["dataname"]
     # vib = util.get_armodel(dataname).process(genres["signal"])
     vib = genres["signal"]
 
@@ -304,273 +288,109 @@ def nmse_shift(sigest, sigtruefunc, shiftmax=100):
 
 
 def estimate_nmse(sigest, sigtruefunc, shiftmax=100):
-    nmse, n = nmse_shift(sigest, sigtruefunc, shiftmax)
+    nmse, _ = nmse_shift(sigest, sigtruefunc, shiftmax)
     idxmin = np.argmin(nmse)
-    return nmse[idxmin], n[idxmin]
+    return nmse[idxmin]
 
 
-def common_snr_experiment(snr: float, seed: int, n_anomalous: int,
-                          dataname: data.DataName, signal_id: str):
+SIGNAL_ID_MAP = {
+    data.DataName.UIA: "y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5",
+    data.DataName.UNSW: "Test 1/6Hz/vib_000002663_06.mat",
+    data.DataName.CWRU: "099",
+}
+
+
+def common_snr_experiment(seed: int, snr: float, dataname: data.DataName,
+                          anomalous: int):
     """General SNR experiment. This function is called by monte-carlo
     experiments using multiprocessing and therefore needs to be defined
     on module-level."""
 
-    residual: VibrationDescriptor = COMMON_RESIDUAL.copy()
-    residual["snr"] = snr
-    residual["anomaly"] = {
-        "amount": n_anomalous,
+    desc: VibrationDescriptor = COMMON_RESIDUAL.copy()
+    desc["snr"] = snr
+    desc["healthy_component"] = {
+        "dataname": dataname,
+        "signal_id": SIGNAL_ID_MAP[dataname]
+    }
+    desc["anomaly"] = {
+        "amount": anomalous,
         "signature": DEFAULT_ANOMALY_SIGNATURE,
     }
-    sigfunc = residual["faults"][0]["signature"]
-    results = benchmark(residual, seed=seed)
-    nmse = [estimate_nmse(mr["sigest"], sigfunc, 1000)[0]
-            for mr in results["methods"].values()]
-    
-    return nmse
+
+    f = lambda x: estimate_nmse(x["sigest"], desc["faults"][0]["signature"], 1000)
+    nmse = map(f, benchmark(desc, seed=seed)["methods"].values())
+    return list(nmse) # to list for multiprocessing support
 
 
-def snr_monte_carlo(n_anomalous=0, mc_iterations=10):
+def snr_monte_carlo(status: ExperimentStatus, mc_iterations=10):
     """For a set of SNR-values, runs the general snr experiment multiple
     times using multiprocessing."""
-    cfg = load_config()
     
-    snr_to_eval = np.logspace(-2, 0, 10).tolist()
-    list_args = []
-    for snr in snr_to_eval:
-        for seed in range(mc_iterations):
-            args = (snr, seed, n_anomalous, "unsw",
-                    "Test 1/6Hz/vib_000002663_06.mat")
-                    # "y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5")
-            list_args.append(args)
+    snr = np.logspace(-2, 0, 10).tolist()
+    dataname = [data.DataName.UIA, data.DataName.UNSW, data.DataName.CWRU]
+    anomalous = [0, 200]
 
-    with Pool(cfg.get(MAX_WORKERS, None)) as p:
-        rmse = p.starmap(common_snr_experiment, list_args)
+    args_list = list(itertools.product(snr, dataname, anomalous))
     
-    return snr_to_eval, rmse
+    status.max_progress = len(args_list)
+
+    rmse = []
+    for i, args in enumerate(args_list):
+        args_ = [(seed, *args) for seed in range(mc_iterations)]
+        with Pool(MAX_WORKERS) as p:
+            rmse_ = p.starmap(common_snr_experiment, args_)
+            rmse.append(np.nanmean(rmse_, axis=0).tolist())
+        status.progress = i+1
+        
+    return args_list, rmse
 
 
 @experiment(OUTPUT_PATH, json=True)
-def ex_snr():
-    """Synthetic data experiment A - No anomlaous events present"""
-    return snr_monte_carlo(n_anomalous=0, mc_iterations=MC_ITERATIONS)
+def ex_snr(status: ExperimentStatus):
+    """Synthetic data experiment"""
+    args, rmse = snr_monte_carlo(status, mc_iterations=MC_ITERATIONS)
+    return args, list(rmse)
 
+def results_predicate(dataname: data.DataName, anomalous: bool):
+    def filt(result):
+        args, _ = result
+        _, arg_dataname, arg_anomalous = args
+        if not arg_dataname == dataname:
+            return False
+        if bool(arg_anomalous) != anomalous:
+            return False
+        return True
+    return filt
 
-@experiment(OUTPUT_PATH, json=True)
-def ex_snr_anomalous():
-    """Synthetic data experiment B - Anomalous events present"""
-    return snr_monte_carlo(n_anomalous=200, mc_iterations=MC_ITERATIONS)
-
-
-@presentation(ex_snr, ex_snr_anomalous)
-def pr_snr(results: Sequence[npt.ArrayLike, tuple]):
+@presentation(ex_snr)
+def pr_snr(results):
     matplotlib.rcParams.update({"font.size": 6})
-    fig, ax = plt.subplots(2, 1, sharex=True, figsize=(3.5, 2.0))
     ylabels = ["A", "B"]
     legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
     markers = ["o", "^", "d", ".", "*", "+"]
     cmap = plt.get_cmap("tab10")
     cmap_idx = [0, 1, 2, 1, 2, 3]
-    for i, result in enumerate(results):
-        snr_to_eval, rmse = result
-        rmse = np.reshape(rmse, (len(snr_to_eval), -1, 6))
-        snr = 10*np.log10(snr_to_eval)
-        mean_rmse = np.nanmean(rmse, 1) # TODO: `nanmean` if points are missing
-        for j in range(mean_rmse.shape[-1]):
-            ax[i].plot(snr, mean_rmse[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
-        ax[i].set_ylabel(f"NMSE\n{ylabels[i]}")
-        ax[i].grid()
-        ax[i].set_yticks([0.0, 0.5, 1.0])
-        ax[i].set_xticks(range(-20, 1, 5))
+    for dataname in ("uia", "unsw", "cwru"):
+        _, ax = plt.subplots(2, 1, sharex=True, figsize=(3.5, 2.0))
+        plt.title(dataname.upper())
+        for i, anomalous in enumerate((False, True)):
+            filtres = list(filter(results_predicate(dataname, anomalous), zip(*results)))
+            snr = [x[0][0] for x in filtres]
+            rmse = np.array([x[-1] for x in filtres])
+            snr_db = 10*np.log10(snr)
+            for j in range(rmse.shape[-1]):
+                ax[i].plot(snr_db, rmse[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
+            ax[i].set_ylabel(f"NMSE\n{ylabels[i]}")
+            ax[i].grid()
+            ax[i].set_yticks([0.0, 0.5, 1.0])
+            ax[i].set_xticks(range(-20, 1, 5))
+            
+        ax[-1].set_xlabel("SNR (dB)")
+        ax[0].legend(legend, ncol=len(legend)//2, loc="upper center",
+                    bbox_to_anchor=(0.5, 1.3))
     
-    ax[-1].set_xlabel("SNR (dB)")
-    ax[0].legend(legend, ncol=len(legend)//2, loc="upper center",
-                 bbox_to_anchor=(0.5, 1.3))
+        plt.tight_layout(pad=0.0)
     
-    plt.tight_layout(pad=0.0)
-    plt.show()
-
-
-
-def interference_experiment(interference: InterferenceDescriptor, seed=0):
-    """General random interference experiment. This function is called
-    by monte-carlo experiments using multiprocessing and therefore needs
-    to be defined on module-level."""
-
-    residual: VibrationDescriptor = COMMON_RESIDUAL.copy()
-    residual["snr"] = 1.0
-    residual["interference"] = interference
-
-    results = benchmark(residual, seed=seed)
-    sigfunc = residual["faults"][0]["signature"]
-    nmse = [estimate_nmse(mr["sigest"], sigfunc, 1000)[0]
-            for mr in results["methods"].values()]
-
-    return nmse
-
-
-@experiment(OUTPUT_PATH, json=True)
-def ex_sir():
-    """For a set of central frequencies, runs the random interference
-    experiment multiple times using multiprocessing."""
-    
-    # sir = np.linspace(5, 0.2, 10).tolist()
-    sir_max = 3.0
-    sir_min = 0.1
-    sir = np.logspace(np.log10(sir_max), np.log10(sir_min), 10).tolist()
-    interf_cfreq = 16e3
-    args = [] 
-    for sir_ in sir:
-        for seed in range(MC_ITERATIONS):
-            interference: InterferenceDescriptor = {
-                "sir": sir_,
-                "central_frequency": interf_cfreq,
-                "bandwidth": 1e3,
-            }
-            args.append((interference, seed))
-
-    with Pool(MAX_WORKERS) as p:
-        rmse = p.starmap(interference_experiment, args)
-    
-    return sir, interf_cfreq, rmse
-
-
-@experiment(OUTPUT_PATH, json=True)
-def ex_sir_frequency():
-    """For a fixed signal-to-interference ratio, runs a
-    "random interference" experiment for varying central frequency."""
-    
-    sir = 1.0
-    interf_cfreq = np.linspace(1e3, 22e3, 10).tolist()
-    args = [] 
-    for cfreq in interf_cfreq:
-        for seed in range(MC_ITERATIONS):
-            interference: InterferenceDescriptor = {
-                "sir": sir,
-                "central_frequency": cfreq,
-                "bandwidth": 1e3,
-            }
-            args.append((interference, seed))
-
-    with Pool() as p:
-        rmse = p.starmap(interference_experiment, args)
-    
-    return {
-        "sir": sir,
-        "interf_cfreq": interf_cfreq,
-        "rmse": rmse,
-    }
-
-
-@presentation(ex_sir)
-def pr_sir_basic(result):
-    
-    plt.figure(figsize=(3.5, 1.5))
-    matplotlib.rcParams.update({"font.size": 6})
-
-    
-    # plot NMSE against SIR
-    sir_to_eval, interf_cfreq, rmse = result
-    legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
-    markers = ["o", "^", "d", ".", "*", "+"]
-    cmap = plt.get_cmap("tab10")
-    cmap_idx = [0, 1, 2, 1, 2, 3]
-    rmse = np.reshape(rmse, (len(sir_to_eval), -1, 6))
-
-    sir = np.round(10*np.log10(sir_to_eval),1)
-    plt.ylabel(f"NMSE")
-    mean_rmse = np.nanmean(rmse, 1)
-    for i in range(mean_rmse.shape[-1]):
-        plt.plot(sir, mean_rmse[:,i], marker=markers[i], c=cmap(cmap_idx[i]))
-    plt.grid()
-    # plt.yticks([0.0, 0.25, 0.5, 0.75, 1.0])
-    plt.yticks([0.0, 0.5, 1.0])
-    # plt.ylim(0, 1.25)
-    plt.xticks(np.round(sir, 2))
-
-    plt.xlabel("SIR (dB)")
-    # plt.title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
-    #plt.gca().invert_xaxis()
-
-    #h, l = ax[0].get_legend_handles_labels()
-    # plt.legend(legend)
-    plt.legend(legend, ncol=len(legend)//2, loc="upper center",
-               bbox_to_anchor=(0.5, 1.3))
-    plt.tight_layout(pad=0.0)
-    plt.show()
-
-
-@presentation(ex_sir, ex_sir_frequency)
-def pr_sir(result_):
-    result = result_[1]
-    fig, ax = plt.subplots(1, 2, sharey=True, figsize=(6.4, 2.5))
-
-    # plot NMSE against interference central frequency
-    legend = ["IRFS", "MED", "SK"]
-    markers = ["o", "^", "d"]
-    rmse = np.reshape(result["rmse"], (len(result["interf_cfreq"]), -1, 3))
-    rmse = np.mean(rmse, 1)
-
-    sir = 10*np.log10(result["sir"])
-    ax[0].set_ylabel(f"NMSE")
-
-    cfreq_khz = np.divide(result["interf_cfreq"], 1e3)
-
-    for i in range(rmse.shape[1]):
-        ax[0].plot(cfreq_khz, rmse[:,i])
-    ax[0].grid()
-    ax[0].set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
-
-    ax[0].set_xlabel("Interference central frequency (kHz)")
-    # ax[0].set_title(f"Signal-to-interference ratio: {sir} (dB)")
-    
-    # plot NMSE against SIR
-    result = result_[0]
-    sir_to_eval, interf_cfreq, rmse = result
-    legend = ["IRFS", "MED", "SK"]
-    markers = ["o", "^", "d"]
-    rmse = np.reshape(rmse, (len(sir_to_eval), -1, 3))
-
-    sir = 10*np.log10(sir_to_eval)
-    # ax[1].set_ylabel(f"NMSE")
-    ax[1].plot(sir, np.mean(rmse, 1))
-    ax[1].grid()
-    ax[1].set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
-
-    ax[1].set_xlabel("SIR (dB)")
-    # plt.title(f"Interference\ncentral frequency: {round(cfreq/1e3)} kHz")
-    #plt.gca().invert_xaxis()
-
-    #h, l = ax[0].get_legend_handles_labels()
-    plt.figlegend(legend)
-    plt.tight_layout()
-    plt.show()
-
-
-@presentation(ex_sir_frequency)
-def pr_sir_frequency(result):
-    #fig, ax = plt.subplots(1, len(interf_cfreq), sharex=True, sharey=True)
-    fig, ax = plt.subplots(figsize=(6.4, 3.5))
-    legend = ["IRFS", "MED", "SK"]
-    markers = ["o", "^", "d"]
-    rmse = np.reshape(result["rmse"], (len(result["interf_cfreq"]), -1, 3))
-    rmse = np.mean(rmse, 1)
-
-    sir = 10*np.log10(result["sir"])
-    ax.set_ylabel(f"NMSE")
-
-    cfreq_khz = np.divide(result["interf_cfreq"], 1e3)
-
-    ax.plot(cfreq_khz, rmse[:,0])
-    ax.plot(cfreq_khz, rmse[:,1])
-    ax.plot(cfreq_khz, rmse[:,2])
-    ax.grid()
-    ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
-
-    ax.set_xlabel("Interference central frequency (kHz)")
-    ax.set_title(f"Signal-to-interference ratio: {sir} (dB)")
-    
-    ax.legend(legend)
-    plt.tight_layout()
     plt.show()
 
 
@@ -642,137 +462,4 @@ def pr_eosp(results):
     plt.legend(legend, ncol=len(legend)//2, loc="upper center",
                bbox_to_anchor=(0.5, 1.3))
     plt.tight_layout(pad=0.0)
-    plt.show()
-
-
-
-# --- Diagnosis experiments (unused) ------------------------------------------
-
-def diagnosis_benchmark(residual: VibrationDescriptor,
-                        faults: algorithms.fault_search,
-                        seed: int = 0,
-                        medfiltsize=100):
-    
-    resid = generate_vibration(residual, seed=seed)
-    
-    search_intervals = faults.values()
-    score_med_results = algorithms.score_med(resid, medfiltsize, search_intervals)
-    residf = score_med_results["filtered"]
-
-    # IRFS method, 1st iteration
-    eosp = algorithms.enedetloc(residf, search_intervals=search_intervals)
-    irfs_diagnosis = algorithms.diagnose_fault(eosp, faults)
-    med_diagnosis = algorithms.diagnose_fault_simple(
-        signal=algorithms.med_filter(resid, medfiltsize, "impulse"),
-        faults=faults,)
-    sk_diagnosis = algorithms.diagnose_fault_simple(
-        signal=algorithms.skfilt(resid),
-        faults=faults,)
-    return [
-        {
-            "name": "IRFS",
-            "diagnosis": irfs_diagnosis,
-        },
-        {
-            "name": "MED",
-            "diagnosis": med_diagnosis,
-        },
-        {
-            "name": "SK",
-            "diagnosis": sk_diagnosis,
-        }
-    ]
-
-
-@experiment(OUTPUT_PATH, json=True)
-def ex_diagnosis():
-    """Performs a diagnosis benchmark for multiple signal realizations
-    of varying levels of signal-to-noise-and-interference ratio (SNIR)"""
-    
-    faults: list[FaultDescriptor] = [
-        {
-            "name": "inner race",
-            "ord": 5.4152,
-            "signature": DEFAULT_FAULT_SIGNATURE,
-            "std": 0.01,
-        },
-        {
-            "name": "outer race",
-            "ord": 3.5848,
-            "signature": DEFAULT_FAULT_SIGNATURE,
-            "std": 0.01
-        }
-    ]
-
-    faults_to_consider: algorithms.fault_search = {
-        fault["name"]: tuple(fault["ord"]+d for d in [-0.1, 0.1]) for fault in faults
-    }
-
-    snir_to_eval = np.logspace(-2, 0, 10).tolist()
-    args = []
-    for fault in faults:
-        for snir in snir_to_eval:
-            for seed in range(MC_ITERATIONS):
-                residual = COMMON_RESIDUAL.copy()
-                residual["snr"] = 1.0
-                residual["interference"] = {
-                    "sir": 5.0,
-                    "bandwidth": 1e3,
-                    "central_frequency": 16e3,
-                }
-                residual["faults"] = [fault]
-                residual["snir"] = snir
-                args.append((residual, faults_to_consider, seed))
-    
-    with Pool() as p:
-        diagnosis_results = p.starmap(diagnosis_benchmark, args)
-
-    # am I having a brain malfunction?
-    results = [] 
-    idx_results = 0
-    for fault in faults:
-        for snir in snir_to_eval:
-            for seed in range(MC_ITERATIONS):
-                results.append({
-                    "fault": fault["name"],
-                    "snir": snir,
-                    "order": fault["ord"],
-                    "methods": diagnosis_results[idx_results]
-                })
-                idx_results += 1
-    return results
-
-
-@presentation(ex_diagnosis)
-def pr_diagnosis(results):
-    faults = ["inner race", "outer race"]
-    methods = ["IRFS", "MED", "SK"]
-
-    fig, ax = plt.subplots(len(faults), 1, sharex=True)
-    for i, fault in enumerate(faults):
-        fault_results = [fault_result for fault_result in results
-                         if fault_result["fault"] == fault]
-
-        snir_list = sorted(list(set([result["snir"] for result in fault_results])))
-        rate = []
-        for snir in snir_list:
-            rate.append([])
-            for j, method in enumerate(methods):
-                methods_gen = (
-                    result["methods"][j] for result in fault_results
-                    if result["snir"] == snir)
-                method_rate = 0 
-                for count, method in enumerate(methods_gen):
-                    correct = method["diagnosis"]["fault"] == fault
-                    method_rate += int(correct)
-                rate[-1].append(100*method_rate/(count+1))
-
-
-        snir_list_db = 10*np.log10(snir_list)
-        ax[i].plot(snir_list_db, rate, label=methods)
-        ax[i].legend()
-        ax[i].set_ylabel(f"{fault.capitalize()} accuracy (%)")
-        
-    ax[-1].set_xlabel("SNIR (db)")
-    
     plt.show()
