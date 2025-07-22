@@ -1,8 +1,9 @@
 from multiprocessing import Pool
-from typing import TypedDict, Callable, NotRequired
+from typing import TypedDict, Callable, NotRequired, Any
 from collections import deque
 from collections.abc import Sequence
 import itertools
+from functools import partial
 
 import numpy as np
 import numpy.typing as npt
@@ -15,6 +16,8 @@ from faultevent.event import event_spectrum
 
 import algorithms
 import data
+from data.synth import generate_vibration, avg_fault_period
+import sizeregr
 import util
 from config import load_config
 
@@ -55,20 +58,15 @@ class VibrationDescriptor(TypedDict):
     anomaly: NotRequired[AnomalyDescriptor]
 
 
-def avg_fault_period(desc: VibrationDescriptor, fault_index: int = 0) -> float:
-    """Computes the average number of shaft revolutions between fault event"""
-    return (desc["sample_frequency"]
-            /desc["shaft_frequency"])/desc["faults"][fault_index]["ord"]
-
-
-#common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
 def DEFAULT_ANOMALY_SIGNATURE(n):
     return (n>=0)*np.sinc(n/2+1)
+
 
 def DEFAULT_FAULT_SIGNATURE(n):
     return (n>=0)*np.sinc(n/8+1)
 
-COMMON_RESIDUAL: VibrationDescriptor = {
+
+DESCRIPTOR_TEMPLATE: VibrationDescriptor = {
     "length": 100000,
     "sample_frequency": 51200,
     "shaft_frequency": 1000/60,
@@ -79,76 +77,11 @@ COMMON_RESIDUAL: VibrationDescriptor = {
     "faults": [
         {
             "ord": 5.0,
-            "signature": DEFAULT_FAULT_SIGNATURE,
+            "signature": DEFAULT_FAULT_SIGNATURE(np.arange(1000)),
             "std": 0.01,
         }
     ]
 }
-
-
-def sigtilde(signat: Callable[[int], float], sigloc: Sequence[int], n: int):
-    """Samples a train of signatures given signature function 'signat'
-    evaluated at 0, 1, ..., 'n' with signature offsets 'sigloc'."""
-    return np.sum([signat(np.arange(n)-n0) for n0 in sigloc], axis=0)
-
-
-def generate_vibration(desc: VibrationDescriptor, seed=0):
-    """Generates a residual signal according to the provided
-    ResidualDescriptor. Always generates the same result unless a
-    different value of 'seed' is used.
-    
-    Returns a dictionary containing the signal, event
-    labels and EOSPs.
-    """
-    rng = np.random.default_rng(seed)
-    resid = np.zeros((desc["length"]), dtype=float)
-    eosp_ = []
-    elbl_ = []
-
-    # Generate fault signatures
-    for i, fault in enumerate(desc["faults"]):
-        df = (desc["sample_frequency"]
-              /desc["shaft_frequency"])/fault["ord"]
-        eosp = np.arange(0, desc["length"], df, dtype=float)
-        eosp += rng.standard_normal(len(eosp))*fault["std"]
-        resid += sigtilde(fault["signature"], eosp, desc["length"])
-
-        eosp_.append(eosp)
-        elbl_.append(np.ones_like(eosp, dtype=int)+i)
-
-    # Generate anomaly signatures
-    if anomaly := desc.get("anomaly", None):
-        eosp = rng.uniform(0, desc["length"], anomaly["amount"])
-        resid += sigtilde(anomaly["signature"], eosp, desc["length"])
-
-        eosp_.append(eosp)
-        elbl_.append(np.zeros_like(eosp, dtype=int))
-    
-    # Noise (healthy) component
-    # A random slice is extracted from the signal `signal_id` of dataset
-    # `dataname` and used as the noise component of the synthetic signal.
-    dl = data.dataloader(desc["healthy_component"]["dataname"])
-    noise_full = dl[desc["healthy_component"]["signal_id"]].vib.y
-    idx0 = rng.choice(len(noise_full)-desc["length"])
-    noise = noise_full[idx0:idx0+desc["length"]]
-
-    pow_resid = np.var(resid)
-    if snr := desc.get("snr", None):
-        assert snr > 0.0
-        pow_noise = np.var(noise)
-        pow_resid = pow_noise*snr
-        resid = np.sqrt(pow_resid)*resid/np.std(resid)
-
-    # Instantiate and return signal object
-    dx = 1/(desc["sample_frequency"]/desc["shaft_frequency"])
-    out = Signal.from_uniform_samples(noise + resid, dx)
-    event_shaft_positions = np.concatenate(eosp_)*dx
-    event_labels = np.concatenate(elbl_)
-    return {
-        "signal": out,
-        "eosp": event_shaft_positions,
-        "event_labels": event_labels,
-    }
 
 
 def estimate_signat(signal: Signal, indices: Sequence[int],
@@ -203,12 +136,12 @@ def benchmark(desc: VibrationDescriptor,
     resid_ar = armodel.residuals(vib)
     resid_ml = mlmodel.residuals(vib)
 
-    # score_med_results = algorithms.score_med(resid_ml, medfiltsize, [(ordmin, ordmax)])
-    # residf = score_med_results["filtered"]
+    score_med_results = algorithms.score_med(resid_ml, medfiltsize, [(ordmin, ordmax)])
+    residf = score_med_results["filtered"]
 
     # IRFS method
-    spos1 = algorithms.enedetloc(resid_ml, search_intervals=[(ordmin, ordmax)])
-    irfs = algorithms.irfs(resid_ml, spos1, ordmin, ordmax, sigestlen, sigestshift,
+    spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
+    irfs = algorithms.irfs(residf, spos1, ordmin, ordmax, sigestlen, sigestshift,
                            vibration=vib)
     irfs_result, = deque(irfs, maxlen=1)
 
@@ -265,16 +198,17 @@ def benchmark(desc: VibrationDescriptor,
 
 # --- NMSE experiments --------------------------------------------------------
 
-def nmse_shift(sigest, sigtruefunc, shiftmax=100):
-    sigest_ = sigest.copy()
-    sigest_ /= np.linalg.norm(sigest_)
-    siglen = len(sigest_)
-    sigtrue = util.get_armodel("uia").process(
-        Signal.from_uniform_samples(sigtruefunc(np.arange(siglen)))).y
+def nmse_shift(signature, estimate, shiftmax=100):
+    # TODO: Continue here
+    sigest = estimate.copy()
+    sigest /= np.linalg.norm(sigest)
+    siglen = len(sigest)
+    
+    sigtrue = signature[:siglen]
     sigtrue /= np.linalg.norm(sigtrue)
 
     if shiftmax>0:
-        sigestpad = np.pad(sigest_, shiftmax)
+        sigestpad = np.pad(sigest, shiftmax)
         # Since both signature estimate and true signature are normalised,
         # it is not neccesary to normalise the MSE estimate, i.e. by dividing
         # by the true signal energy.
@@ -287,8 +221,9 @@ def nmse_shift(sigest, sigtruefunc, shiftmax=100):
     return nmse, n
 
 
-def estimate_nmse(sigest, sigtruefunc, shiftmax=100):
-    nmse, _ = nmse_shift(sigest, sigtruefunc, shiftmax)
+def estimate_nmse(estimate, signature, maxshift=100):
+    """Estimate the NMSE between a signature `estimate` and the true `signature`"""
+    nmse, _ = nmse_shift(signature, estimate, maxshift)
     idxmin = np.argmin(nmse)
     return nmse[idxmin]
 
@@ -300,61 +235,78 @@ SIGNAL_ID_MAP = {
 }
 
 
-def common_snr_experiment(seed: int, snr: float, dataname: data.DataName,
-                          anomalous: int):
+def snr_experiment(seed: int, score_func: Callable[[BenchmarkResults], Any],
+                   snr: float, dataname: data.DataName,
+                   anomalous: int, signature, score_args=()):
     """General SNR experiment. This function is called by monte-carlo
     experiments using multiprocessing and therefore needs to be defined
     on module-level."""
 
-    desc: VibrationDescriptor = COMMON_RESIDUAL.copy()
-    desc["snr"] = snr
-    desc["healthy_component"] = {
-        "dataname": dataname,
-        "signal_id": SIGNAL_ID_MAP[dataname]
+    desc: VibrationDescriptor = {
+        "length": 100000,
+        "sample_frequency": 51200,
+        "shaft_frequency": 1000/60,
+        "snr": snr,
+        "healthy_component": {
+            "dataname": dataname,
+            "signal_id": SIGNAL_ID_MAP[dataname]
+        },
+        "faults": [
+            {
+                "ord": 5.0,
+                "signature": signature,
+                "std": 0.01,
+            }
+        ],
+        "anomaly": {
+            "amount": anomalous,
+            "signature": DEFAULT_ANOMALY_SIGNATURE(np.arange(1000)),
+        }
     }
-    desc["anomaly"] = {
-        "amount": anomalous,
-        "signature": DEFAULT_ANOMALY_SIGNATURE,
-    }
 
-    f = lambda x: estimate_nmse(x["sigest"], desc["faults"][0]["signature"], 1000)
-    nmse = map(f, benchmark(desc, seed=seed)["methods"].values())
-    return list(nmse) # to list for multiprocessing support
+    return score_func(benchmark(desc, seed=seed), *score_args)
 
 
-def snr_monte_carlo(status: ExperimentStatus, mc_iterations=10):
-    """For a set of SNR-values, runs the general snr experiment multiple
-    times using multiprocessing."""
-    
+def benchmark_nmse(results: BenchmarkResults, signature):
+    f = lambda x: estimate_nmse(estimate=x["sigest"],
+                                signature=signature,
+                                maxshift=1000)
+    nmse = map(f, results["methods"].values())
+    return list(nmse)
+
+
+@experiment(OUTPUT_PATH, json=True)
+def ex_nmse_snr(status: ExperimentStatus):
+    """Monte-carlo simulation of signature NMSE for varying SNR"""
+
+    iterations = 1
+
     snr = np.logspace(-2, 0, 10).tolist()
     dataname = [data.DataName.UIA, data.DataName.UNSW, data.DataName.CWRU]
-    anomalous = [0, 200]
+    # dataname = [data.DataName.UNSW]
+    anomalous = [0, 1000]
+    #signature = [DEFAULT_FAULT_SIGNATURE(np.arange(1000)).tolist()]
+    
+    signature = [sizeregr.signature_factory(15, 20, 1000).tolist()]
 
-    args_list = list(itertools.product(snr, dataname, anomalous))
+    args_list = list(itertools.product(snr, dataname, anomalous, signature))
+    score_args = (signature[0],)
     
     status.max_progress = len(args_list)
-
     rmse = []
     for i, args in enumerate(args_list):
-        args_ = [(seed, *args) for seed in range(mc_iterations)]
+        args_ = [(seed, benchmark_nmse, *args, score_args) for seed in range(iterations)]
         with Pool(MAX_WORKERS) as p:
-            rmse_ = p.starmap(common_snr_experiment, args_)
+            rmse_ = p.starmap(snr_experiment, args_)
             rmse.append(np.nanmean(rmse_, axis=0).tolist())
         status.progress = i+1
         
     return args_list, rmse
 
-
-@experiment(OUTPUT_PATH, json=True)
-def ex_snr(status: ExperimentStatus):
-    """Synthetic data experiment"""
-    args, rmse = snr_monte_carlo(status, mc_iterations=MC_ITERATIONS)
-    return args, list(rmse)
-
 def results_predicate(dataname: data.DataName, anomalous: bool):
     def filt(result):
         args, _ = result
-        _, arg_dataname, arg_anomalous = args
+        _, arg_dataname, arg_anomalous, _ = args
         if not arg_dataname == dataname:
             return False
         if bool(arg_anomalous) != anomalous:
@@ -362,8 +314,8 @@ def results_predicate(dataname: data.DataName, anomalous: bool):
         return True
     return filt
 
-@presentation(ex_snr)
-def pr_snr(results):
+@presentation(ex_nmse_snr)
+def pr_nmse_snr(results):
     matplotlib.rcParams.update({"font.size": 6})
     ylabels = ["A", "B"]
     legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
@@ -394,6 +346,69 @@ def pr_snr(results):
     plt.show()
 
 
+# --- Fault size experiments -------------------------------------------
+
+def benchmark_fsize(results: BenchmarkResults, fsize, model):
+    sigest = (np.array(m["sigest"], dtype=np.float32)
+              for m in results["methods"].values())
+    pred_err = map(partial(sizeregr.pred_err_np, fsize, model), sigest)
+    return list(pred_err)
+
+@experiment(OUTPUT_PATH, json=True)
+def ex_fsize_snr(status: ExperimentStatus):
+    """Monte-carlo simulation of signature NMSE for varying SNR"""
+    model = sizeregr.Model.load(sizeregr.model_filepath())
+    
+    snr = np.logspace(-2, 0, 10).tolist()
+    dataname = [data.DataName.UNSW]
+    anomalous = [0]
+    fsize = 15
+    shift = 20
+    signature = [sizeregr.signature_factory(fsize, shift, sizeregr.INPUT_LENGTH).tolist()]
+
+    args_list = list(itertools.product(snr, dataname, anomalous, signature))
+    score_args = (fsize, model)
+    
+    status.max_progress = len(args_list)
+
+    err = []
+    for i, args in enumerate(args_list):
+        args_ = [(seed, benchmark_fsize, *args, score_args) for seed in range(MC_ITERATIONS)]
+        with Pool(MAX_WORKERS) as p:
+            err_ = p.starmap(snr_experiment, args_)
+            err.append(np.nanmean(err_, axis=0).tolist())
+        status.progress = i+1
+        
+    return args_list, err
+
+
+@presentation(ex_fsize_snr)
+def pr_fsize_snr(results):
+    matplotlib.rcParams.update({"font.size": 6})
+    legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
+    markers = ["o", "^", "d", ".", "*", "+"]
+    cmap = plt.get_cmap("tab10")
+    cmap_idx = [0, 1, 2, 1, 2, 3]
+    _, ax = plt.subplots(1, 1, sharex=True, figsize=(3.5, 2.0))
+    
+    args_list, err = results
+    snr = [arg[0] for arg in args_list]
+    snr_db = 10*np.log10(snr)
+    errarr = np.array(err).T
+    for j, err_ in enumerate(errarr):
+        ax.plot(snr_db, err_, marker=markers[j], c=cmap(cmap_idx[j]))
+    ax.grid()
+    ax.set_xticks(range(-20, 1, 5))
+        
+    ax.set_xlabel("SNR (dB)")
+    ax.set_ylabel("Fault size (samples)")
+    ax.legend(legend, ncol=len(legend)//2, loc="upper center",
+              bbox_to_anchor=(0.5, 1.3))
+
+    plt.tight_layout(pad=0.0)
+    
+    plt.show()
+
 # --- EOSP experiments --------------------------------------------------------
 
 def eosp_metric(ordf: float,
@@ -412,7 +427,7 @@ def eosp_metric(ordf: float,
 
 
 def common_eosp_experiment(snr, seed):
-    residual: VibrationDescriptor = COMMON_RESIDUAL.copy()
+    residual: VibrationDescriptor = DESCRIPTOR_TEMPLATE.copy()
     residual["snr"] = snr
     results = benchmark(residual, seed=seed)
     eosp_true = results["eosp"][results["event_labels"]==1]

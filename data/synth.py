@@ -3,10 +3,10 @@ from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
-import scipy.signal
 
 from faultevent.signal import Signal
 
+import data
 
 class FaultDescriptor(TypedDict):
     name: NotRequired[str]
@@ -20,42 +20,80 @@ class AnomalyDescriptor(TypedDict):
     signature: Callable[[int], npt.ArrayLike]
 
 
-class InterferenceDescriptor(TypedDict):
-    sir: float
-    central_frequency: float
-    bandwidth: float
+class HealthyComponentDescriptor(TypedDict):
+    dataname: data.DataName
+    signal_id: str
 
 
-class SignalDescriptor(TypedDict):
+class VibrationDescriptor(TypedDict):
     length: int
     sample_frequency: float
     shaft_frequency: float
+    healthy_component: HealthyComponentDescriptor
     faults: Sequence[FaultDescriptor]
     snr: NotRequired[float]
-    snir: NotRequired[float]
     anomaly: NotRequired[AnomalyDescriptor]
-    interference: NotRequired[InterferenceDescriptor]
 
 
-def avg_fault_period(desc: SignalDescriptor,
-                         fault_index: int = 0) -> float:
+def avg_fault_period(desc: VibrationDescriptor, fault_index: int = 0) -> float:
     """Computes the average number of shaft revolutions between fault event"""
     return (desc["sample_frequency"]
             /desc["shaft_frequency"])/desc["faults"][fault_index]["ord"]
 
 
 #common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
-DEFAULT_ANOMALY_SIGNATURE = lambda n: (n>=0)*np.sinc(n/2+1)
+def DEFAULT_ANOMALY_SIGNATURE(n):
+    return (n>=0)*np.sinc(n/2+1)
+
 def DEFAULT_FAULT_SIGNATURE(n):
     return (n>=0)*np.sinc(n/8+1)
 
-def sigtilde(signat: Callable[[int], float], sigloc: Sequence[int], n: int):
+COMMON_RESIDUAL: VibrationDescriptor = {
+    "length": 100000,
+    "sample_frequency": 51200,
+    "shaft_frequency": 1000/60,
+    "healthy_component": {
+        "dataname": "unsw",
+        "signal_id": "Test 1/6Hz/vib_000002663_06.mat",
+    },
+    "faults": [
+        {
+            "ord": 5.0,
+            "signature": DEFAULT_FAULT_SIGNATURE,
+            "std": 0.01,
+        }
+    ]
+}
+
+
+def sigtilde(sigloc: Sequence[int], n: int, sig_samp = None, sig_func: Callable[[int], float] = None, fs=1.0):
     """Samples a train of signatures given signature function 'signat'
     evaluated at 0, 1, ..., 'n' with signature offsets 'sigloc'."""
-    return np.sum([signat(np.arange(n)-n0) for n0 in sigloc], axis=0)
+    assert sig_samp or sig_func
+    if sig_samp:
+        out = np.zeros((n,), dtype=float)
+        for loc in sigloc:
+            idx0 = max(0, loc)
+            idx1 = min(n, loc+len(sig_samp))
+            out[idx0:idx1] = sig_samp[:idx0-idx1]
+        return 
+    elif sig_func:
+        return np.sum([sig_func(np.arange(n)-n0) for n0 in sigloc], axis=0)
 
 
-def generate_signal(desc: SignalDescriptor, seed=None):
+def signature_train(eosp: Sequence[float], signature, signal_length, fs, fshaft):
+    """Create a train of signatures"""
+    out = np.zeros((signal_length,), dtype=float)
+    n = np.array((eosp/fshaft)*fs, dtype=int)
+    for idx in n:
+        idx0 = max(0, idx)
+        idx1 = min(signal_length, idx+len(signature))
+        slicelen = idx1-idx0
+        out[idx0:idx1] = signature[:slicelen]
+    return out
+
+
+def generate_vibration(desc: VibrationDescriptor, seed=0):
     """Generates a residual signal according to the provided
     ResidualDescriptor. Always generates the same result unless a
     different value of 'seed' is used.
@@ -63,71 +101,51 @@ def generate_signal(desc: SignalDescriptor, seed=None):
     Returns a dictionary containing the signal, event
     labels and EOSPs.
     """
-    # TODO: Support signal filter, e.g. AR
     rng = np.random.default_rng(seed)
-    signal = np.zeros((desc["length"]), dtype=float)
+    resid = np.zeros((desc["length"]), dtype=float)
     eosp_ = []
     elbl_ = []
 
+    eosp_end = desc["length"]/desc["sample_frequency"]*desc["shaft_frequency"]
     # Generate fault signatures
     for i, fault in enumerate(desc["faults"]):
-        df = (desc["sample_frequency"]
-              /desc["shaft_frequency"])/fault["ord"]
-        eosp = np.arange(0, desc["length"], df, dtype=float)
+        eosp = np.arange(0, eosp_end, 1/fault["ord"])
         eosp += rng.standard_normal(len(eosp))*fault["std"]
-        signal += sigtilde(fault["signature"], eosp, desc["length"])
+        resid += signature_train(eosp, fault["signature"], desc["length"],
+                                 fs=desc["sample_frequency"],
+                                 fshaft=desc["shaft_frequency"])
 
         eosp_.append(eosp)
         elbl_.append(np.ones_like(eosp, dtype=int)+i)
 
     # Generate anomaly signatures
     if anomaly := desc.get("anomaly", None):
-        eosp = rng.uniform(0, desc["length"], anomaly["amount"])
-        signal += sigtilde(anomaly["signature"], eosp, desc["length"])
+        eosp = rng.uniform(0, eosp_end, anomaly["amount"])
+        resid += signature_train(eosp, anomaly["signature"], desc["length"],
+                                 fs=desc["sample_frequency"],
+                                 fshaft=desc["shaft_frequency"])
 
         eosp_.append(eosp)
         elbl_.append(np.zeros_like(eosp, dtype=int))
     
-    
-    sigpow = np.var(signal) # total signatures power
+    # Noise (healthy) component
+    # A random slice is extracted from the signal `signal_id` of dataset
+    # `dataname` and used as the noise component of the synthetic signal.
+    dl = data.dataloader(desc["healthy_component"]["dataname"])
+    noise_full = dl[desc["healthy_component"]["signal_id"]].vib.y
+    idx0 = rng.choice(len(noise_full)-desc["length"])
+    noise = noise_full[idx0:idx0+desc["length"]]
 
-    # Generate signal noise
+    pow_resid = np.var(resid)
     if snr := desc.get("snr", None):
-        noisepow = sigpow/snr
-        noise = rng.standard_normal(desc["length"]) * np.sqrt(noisepow)
-    else:
-        noise = np.zeros_like(signal)
-
-    # Generate random interference componen
-    if interference := desc.get("interference", None):
-        Wn_low = interference["central_frequency"] - interference["bandwidth"]/2
-        Wn_high = interference["central_frequency"] + interference["bandwidth"]/2
-        interf = rng.laplace(0, 1, signal.shape)
-        interf = np.sign(interf)*interf**2
-        interf_sos = scipy.signal.butter(4, Wn=(Wn_low, Wn_high),
-                                         btype="bandpass",
-                                         output="sos",
-                                         fs=desc["sample_frequency"],)
-        interf = scipy.signal.sosfilt(interf_sos, interf)
-        intpow = sigpow/interference["sir"]
-        interf *= np.sqrt(intpow)/np.std(interf)
-    else:
-        interf = np.zeros_like(signal)
-
-    ni = noise + interf # noise and interference
-    if (snir := desc.get("snir", None)) and (snr or interference):
-        # SNIR = var(resid) / var(noise + interf)
-        # var(noise + interf) = var(resid) / SNIR
-        # std(noise + interf) = sqrt(var(resid) / SNIR)
-        # std(noise + interf) = std(resid) / sqrt(SNIR)
-        pow_ni = sigpow/snir
-        ni *= np.sqrt(pow_ni)/np.std(ni)
-    
-    signal += ni
+        assert snr > 0.0
+        pow_noise = np.var(noise)
+        pow_resid = pow_noise*snr
+        resid = np.sqrt(pow_resid)*resid/np.std(resid)
 
     # Instantiate and return signal object
     dx = 1/(desc["sample_frequency"]/desc["shaft_frequency"])
-    out = Signal.from_uniform_samples(signal, dx)
+    out = Signal.from_uniform_samples(noise + resid, dx)
     event_shaft_positions = np.concatenate(eosp_)*dx
     event_labels = np.concatenate(elbl_)
     return {
