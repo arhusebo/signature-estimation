@@ -49,32 +49,41 @@ class Model(torch.nn.Module):
                                                 kernel_size, stride=stride,
                                                 dilation=dilation)]
         self.activation = torch.nn.ELU()
+        self.bnorm_down = [torch.nn.BatchNorm1d(1)]
+        self.bnorm_down += [torch.nn.BatchNorm1d(hidden_channels)
+                           for _ in range(hidden_channels)]
+        self.bnorm_up = [torch.nn.BatchNorm1d(hidden_channels)
+                         for _ in range(hidden_channels)]
+        self.bnorm_up += [torch.nn.BatchNorm1d(1)]
 
-        self.layers = torch.nn.ModuleList((*self.downsample, *self.upsample))
+        self.layers = torch.nn.ModuleList((*self.downsample, *self.upsample,
+                                           *self.bnorm_down, *self.bnorm_up))
 
     def forward(self, x):
         # shape(x) = (N, 1, L)
-        mean = torch.mean(x, dim=-1, keepdim=True)
-        x -= mean
-        std = torch.std(x, dim=-1, keepdim=True)
-        x /= 3*std
+        #mean = torch.mean(x, dim=-1, keepdim=True)
+        #x -= mean
+        #std = torch.std(x, dim=-1, keepdim=True)
+        #x /= 3*std
 
         padlog = torch.zeros((len(self.downsample)), dtype=int)
-        for i, layer in enumerate(self.downsample):
+        for i, (layer, bnorm) in enumerate(zip(self.downsample, self.bnorm_down)):
             lin = x.shape[-1]
+            x = bnorm(x)
             x = layer(x)
             lout = x.shape[-1]
             padlog[i] = lin//self.stride-lout
             x = self.activation(x)
         
         padlog = torch.flip(padlog, (0,))
-        for i, layer in enumerate(self.upsample):
+        for i, (layer, bnorm) in enumerate(zip(self.upsample, self.bnorm_up)):
+            x = bnorm(x)
             x = layer(x)
             x = torch.nn.functional.pad(x, (0, padlog[i]))
             if i<len(self.upsample)-1:
                 x = self.activation(x)
-        x *= 3*std
-        x -= torch.mean(x, dim=-1, keepdim=True)
+        #x *= 3*std
+        #x -= torch.mean(x, dim=-1, keepdim=True)
         return x
     
     @classmethod
@@ -114,6 +123,22 @@ def augment_sequence(signal, snr: float):
 
     return signal + tilde
 
+ 
+def itertools_batched(iterable, n, *, strict=False):
+    '''"Backport" for `itertools.batched` (Python 3.12)
+    
+    Copied from "roughly equivalent" example at
+    https://docs.python.org/3/library/itertools.html#itertools.batched
+    '''
+    # batched('ABCDEFG', 2) → AB CD EF G
+    if n < 1:
+        raise ValueError('n must be at least one')
+    iterator = iter(iterable)
+    while batch := tuple(itertools.islice(iterator, n)):
+        if strict and len(batch) != n:
+            raise ValueError('batched(): incomplete batch')
+        yield batch
+
 
 def batchify(x, siglen: int):
     # The number of batches is determined by the specified signal
@@ -121,7 +146,7 @@ def batchify(x, siglen: int):
     # depending on the length of the loaded signal.
     nbatches = len(x)//siglen
     # (N, L)
-    xb = torch.tensor(list(itertools.batched(x[:nbatches*siglen], siglen)),
+    xb = torch.tensor(list(itertools_batched(x[:nbatches*siglen], siglen)),
                         dtype=torch.float32)
     # (N, 1, L)
     xb = xb[:,torch.newaxis,:]

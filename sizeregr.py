@@ -12,35 +12,6 @@ def model_filepath():
     return model_path/"sizeregr.pt"
 
 
-class ModelDNN(torch.nn.Module):
-
-    def __init__(self):
-        super().__init__()
-
-        width = 100
-        depth = 10
-
-        self.input = torch.nn.Linear(400,width)
-        self.hidden = [torch.nn.Linear(width, width)]*depth
-        self.output = torch.nn.Linear(width,1)
-        self.activation = torch.nn.ReLU()
-        
-        self.layers = torch.nn.ModuleList((self.input, *self.hidden, self.output))
-    
-    def forward(self, x):
-        x = self.activation(self.input(x))
-        for layer in self.hidden:
-            x = self.activation(layer(x))
-        return self.output(x)
-
-    @classmethod
-    def load(cls, savepath: str):
-        model = cls()
-        state = torch.load(savepath)
-        model.load_state_dict(state["model_state_dict"])
-        return model
-
-
 class Model(torch.nn.Module):
 
     def __init__(self):
@@ -56,14 +27,15 @@ class Model(torch.nn.Module):
 
         self.input = torch.nn.Conv1d(1, channels, kernel, stride)
         self.bnorm_in = torch.nn.BatchNorm1d(channels)
-        self.conv_hidden = [torch.nn.LazyConv1d(channels, kernel, stride)]*(conv_depth-1)
+        self.conv_hidden = [torch.nn.LazyConv1d(channels, kernel, stride)
+                            for _ in range(conv_depth-1)]
         self.conv_out = torch.nn.LazyConv1d(1, kernel, stride)
-        self.hidden = [torch.nn.LazyLinear(width)]+[torch.nn.Linear(width, width)]*depth
+        self.hidden =  [torch.nn.LazyLinear(width)]
+        self.hidden += [torch.nn.Linear(width, width) for _ in range(depth)]
         self.output = torch.nn.LazyLinear(1)
-        self.act_conv = torch.nn.ReLU()
-        self.act_linr = torch.nn.Tanh()
+        self.act = torch.nn.ELU()
         self.pool = torch.nn.MaxPool1d(2)
-        self.bnorm_hidden = [torch.nn.BatchNorm1d(channels)]*len(self.conv_hidden)
+        self.bnorm_hidden = [torch.nn.BatchNorm1d(channels) for _ in range(len(self.conv_hidden))]
         
         self.layers = torch.nn.ModuleList((self.input, self.bnorm_in,
                                            *self.conv_hidden,
@@ -73,17 +45,17 @@ class Model(torch.nn.Module):
     def forward(self, x):
         x = self.input(x)
         x = self.bnorm_in(x)
-        x = self.act_conv(x)
+        x = self.act(x)
         for conv, bnorm in zip(self.conv_hidden, self.bnorm_hidden):
             x = conv(x)
             x = bnorm(x)
-            x = self.act_conv(x)
+            x = self.act(x)
             x = self.pool(x)
-        x = self.act_conv(self.conv_out(x))
+        x = self.act(self.conv_out(x))
         x = x.view(x.size(0), -1)
         for layer in self.hidden:
             x = layer(x)
-            x = self.act_linr(x)
+            x = self.act(x)
         return self.output(x)
     
     @classmethod
@@ -135,15 +107,15 @@ def pred(model, fault_signature):
     s = fault_signature[torch.newaxis,torch.newaxis,:INPUT_LENGTH]
     return model(s)
 
+
 def pred_np(model, fault_signature):
     return pred(model, torch.from_numpy(fault_signature)).detach().numpy().item()
+
 
 def pred_err_np(fsize, model, fault_signature):
     return abs(pred(model, torch.from_numpy(fault_signature))
                .detach().numpy().item()-fsize)
 
-def mae_loss(x, y):
-    return torch.median(torch.abs(x-y)**2)
 
 def train(iterations: int, savepath: str, save_every: int = None, overwrite = False):
     
@@ -158,8 +130,7 @@ def train(iterations: int, savepath: str, save_every: int = None, overwrite = Fa
         except Exception:
                 print("could not load model state")
 
-    # loss_fn = torch.nn.MSELoss()
-    loss_fn = mae_loss
+    loss_fn = torch.nn.MSELoss()
     
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
@@ -180,7 +151,8 @@ def train(iterations: int, savepath: str, save_every: int = None, overwrite = Fa
 
         optimizer.step()
         iter_loss.append(loss)
-        print(f"i{iter},s{i}\t{loss.item()}")
+        print(f"i{iter},s{i},l:{loss.item():.2f}"
+              f"\tabserr: {torch.sqrt(loss).item():.2f}")
     
         # save model after every epoch
         savedict = {

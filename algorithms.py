@@ -1,15 +1,17 @@
 from collections.abc import Sequence, Generator
 from typing import Literal, TypedDict
+from dataclasses import dataclass, replace
 import numpy as np
 import numpy.typing as npt
 import scipy.signal
 import scipy.stats
 import faultevent.event as evt
 import faultevent.signal as sig
+from faultevent.signal import MatchedFilterMaximumDetector
 from faultevent import util as utl
 
 
-class IRFSIteration(TypedDict):
+class IRFSIterationDict(TypedDict):
     sigest: Sequence[float]
     eosp: Sequence[float]
     magnitude: Sequence[float]
@@ -20,98 +22,108 @@ class IRFSIteration(TypedDict):
     threshold: float
 
 
-def irfs(residual: sig.Signal,
-         spos1: npt.ArrayLike,
-         ordmin: float,
-         ordmax: float,
-         sigsize: int,
-         sigshift: int,
-         vibration: sig.Signal = None,
-         vibration_sigsize: int | None = None,
-         hys: float = .01,
-         enedet_max_loc_error: int = 10,
-         n_iter: int = 10,
-         threshold_trials = 10,) -> Generator[IRFSIteration, None, None]:
+@dataclass
+class IRFSParams:
+    fmin: float
+    fmax: float
+    signature_length: int
+    signature_shift: int
+    max_shift_error: int = 10
+    threshold_trials: int = 10
+    ed_window: int = 50
+    hyst_ed: float = 0.8
+
+@dataclass
+class IRFSIteration:
+    sigest: Sequence[float]
+    eot: Sequence[float]
+    magnitude: Sequence[float]
+    certainty: Sequence[float]
+    freq: float
+    mu: float
+    kappa: float
+    threshold: float | None
+
+
+def irfs_iteration(params: IRFSParams,
+                   signal: sig.Signal,
+                   eot: npt.ArrayLike,
+                   max_shift_error: int = 0,
+                   normthr: float | None = None) -> IRFSIteration:
+    """Perform one iteration of IRFS"""
     
-    if not vibration_sigsize:
-        vibration_sigsize = sigsize
+    freq, _ = evt.find_order(eot, params.fmin, params.fmax)
+    mu, kappa = evt.fit_vonmises(freq, eot)
+    z = evt.map_circle(freq, eot)
+    crt = scipy.stats.vonmises.pdf(z, kappa, loc=mu)
+    idx = np.argsort(crt)[::-1]
+    sigest = utl.estimate_signature(signal,
+                                    params.signature_length,
+                                    x=eot[idx],
+                                    weights=crt[idx],
+                                    max_error=max_shift_error,)
+    det = MatchedFilterMaximumDetector(sigest)
+    stat = det.statistic(signal)
+    if normthr is None:
+        thr, _ = utl.best_threshold(stat, [(params.fmin, params.fmax)],
+                                    n=params.threshold_trials)
+    else:
+        thr = normthr*np.linalg.norm(sigest)
+
+    cmp = sig.Comparison.from_comparator(stat, thr)
+    eot_new, mag = sig.matched_filter_location_estimates(cmp)
+
+    return IRFSIteration(
+        sigest=sigest,
+        eot=eot_new,
+        magnitude=mag,
+        certainty=crt,
+        freq=freq,
+        mu=mu,
+        kappa=kappa,
+        threshold=thr,
+    )
+
+
+def irfs(params: IRFSParams,
+         signal: sig.Signal,
+         ) -> Generator[IRFSIteration, None, None]:
+    """Given an initial iteration, return a generator that yields
+    subsequent iterations of IRFS"""
+
+    # energy detector to estimate initial set of EOTs
+    eot0 = enedetloc(data=signal,
+                     search_intervals=[(params.fmin, params.fmax)],
+                     enedetsize=params.ed_window,
+                     hysteresis=params.hyst_ed)
+
+    if len(eot0)==0:
+        raise ValueError("energy detector did not detect any events")
+
+    # adjust for shift
+    eot0 += params.signature_shift*signal.dx
 
     # initial iteration
-    ordf1, _ = evt.find_order(spos1, ordmin, ordmax)
-    mu1, kappa1 = evt.fit_vonmises(ordf1, spos1)
-    z1 = evt.map_circle(ordf1, spos1)
-    crt1 = scipy.stats.vonmises.pdf(z1, kappa1, loc=mu1)
-    idx1 = np.argsort(crt1)[::-1]
-    signat1 = utl.estimate_signature(residual,
-                                     sigsize,
-                                     x=spos1[idx1],
-                                     weights=crt1[idx1],
-                                     max_error = enedet_max_loc_error,
-                                     n0 = sigshift)
+    iter = irfs_iteration(params, signal, eot0,
+                          max_shift_error=params.max_shift_error,)
+    yield iter
 
-    # ith iteration
-    det1 = sig.MatchedFilterEnvelopeDetector(signat1)
-    stat1 = det1.statistic(residual)
-    norm1 = np.linalg.norm(signat1)
-    thr1, _ = utl.best_threshold(stat1, [(ordmin, ordmax)], hysteresis=hys,
-                              n=threshold_trials)/norm1
-    det_list = [det1]
-    for i in range(1, n_iter-1):
-        stat_i = det_list[i-1].statistic(residual)
-        thr_i = thr1*np.linalg.norm(det_list[i-1].h)
-        cmp_i = sig.Comparison.from_comparator(stat_i, thr_i, thr_i*hys)
-        spos_i, mag_i = np.asarray(sig.matched_filter_location_estimates(cmp_i))
-        if len(spos_i) == 0: return
-        ordf_i, _ = utl.find_order(spos_i, ordmin, ordmax)
-        mu_i, kappa_i = evt.fit_vonmises(ordf_i, spos_i)
-        z_i = evt.map_circle(ordf_i, spos_i)
-        crt_i = scipy.stats.vonmises.pdf(z_i, kappa_i, loc=mu_i)
-        idx_sorted = np.argsort(crt_i)[::-1]
-        sig_i = utl.estimate_signature(residual,
-                                       len(det_list[i-1].h),
-                                       x=spos_i[idx_sorted],
-                                       weights=crt_i[idx_sorted])
-        det_i = sig.MatchedFilterEnvelopeDetector(sig_i)
-        det_list.append(det_i)
+    normthr = iter.threshold/np.linalg.norm(iter.sigest)
 
-        vib_sig_i = None
-        if vibration:
-            vib_sig_i = utl.estimate_signature(
-                vibration,
-                vibration_sigsize,
-                x=spos_i[idx_sorted],
-                weights=crt_i[idx_sorted],)
-
-        # yield IRFSIteration(
-        #     sigest=sig_i,
-        #     eosp=spos_i,
-        #     magnitude=mag_i,
-        #     certainty=crt_i,
-        #     ordf=ordf_i,
-        #     mu=mu_i,
-        #     kappa=kappa_i,
-        # )
-
-        yield  {
-            "sigest": sig_i,
-            "eosp": spos_i,
-            "magnitude": mag_i,
-            "certainty": crt_i,
-            "ordf": ordf_i,
-            "mu": mu_i,
-            "kappa": kappa_i,
-            "threshold": thr_i,
-            "sigest_vib": vib_sig_i
-        }
+    # subsequent iterations
+    i = 0
+    while (i:=i+1):
+        iter = irfs_iteration(params, signal, iter.eot, normthr=normthr)
+        yield iter
 
 
 class DiagnosedFault(TypedDict):
     fault: str
     ord: float
 
-type fault_search = dict[str, tuple[float, float]]
+#type fault_search = dict[str, tuple[float, float]]
 
-def diagnose_fault(eosp: npt.ArrayLike, faults: fault_search) -> DiagnosedFault:
+def diagnose_fault(eosp: npt.ArrayLike, faults) -> DiagnosedFault:
     """Diagnose the fault type given event shaft positions and a list
     of dictionaries containing fault characteristics. Fault
     dictionaries must be on the form
@@ -133,7 +145,7 @@ def diagnose_fault(eosp: npt.ArrayLike, faults: fault_search) -> DiagnosedFault:
     return best_result
 
 
-def diagnose_fault_simple(signal: sig.Signal, faults: fault_search) -> DiagnosedFault:
+def diagnose_fault_simple(signal: sig.Signal, faults) -> DiagnosedFault:
     """Similar as diagnose_fault, but is based on the envelope spectrum."""
     best_score = 0.0
     envelope = scipy.signal.hilbert(signal.y)

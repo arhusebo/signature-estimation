@@ -16,7 +16,7 @@ from faultevent.event import event_spectrum
 
 import algorithms
 import data
-from data.synth import generate_vibration, avg_fault_period
+from data.synth import generate_vibration, avg_fault_period, VibrationDescriptor
 import sizeregr
 import util
 from config import load_config
@@ -27,61 +27,11 @@ cfg = load_config()
 
 OUTPUT_PATH = "results/synth"
 MC_ITERATIONS = cfg.get("mc_iterations", 30)
-MAX_WORKERS = cfg.get("mc_iterations", 30)
-
-
-
-class FaultDescriptor(TypedDict):
-    name: NotRequired[str]
-    ord: float
-    std: float
-    signature: Callable[[int], npt.ArrayLike]
-
-
-class AnomalyDescriptor(TypedDict):
-    amount: int
-    signature: Callable[[int], npt.ArrayLike]
-
-
-class HealthyComponentDescriptor(TypedDict):
-    dataname: data.DataName
-    signal_id: str
-
-
-class VibrationDescriptor(TypedDict):
-    length: int
-    sample_frequency: float
-    shaft_frequency: float
-    healthy_component: HealthyComponentDescriptor
-    faults: Sequence[FaultDescriptor]
-    snr: NotRequired[float]
-    anomaly: NotRequired[AnomalyDescriptor]
+MAX_WORKERS = cfg.get("max_workers", None)
 
 
 def DEFAULT_ANOMALY_SIGNATURE(n):
     return (n>=0)*np.sinc(n/2+1)
-
-
-def DEFAULT_FAULT_SIGNATURE(n):
-    return (n>=0)*np.sinc(n/8+1)
-
-
-DESCRIPTOR_TEMPLATE: VibrationDescriptor = {
-    "length": 100000,
-    "sample_frequency": 51200,
-    "shaft_frequency": 1000/60,
-    "healthy_component": {
-        "dataname": "unsw",
-        "signal_id": "Test 1/6Hz/vib_000002663_06.mat",
-    },
-    "faults": [
-        {
-            "ord": 5.0,
-            "signature": DEFAULT_FAULT_SIGNATURE(np.arange(1000)),
-            "std": 0.01,
-        }
-    ]
-}
 
 
 def estimate_signat(signal: Signal, indices: Sequence[int],
@@ -110,8 +60,9 @@ class BenchmarkResults(TypedDict):
 
 
 def benchmark(desc: VibrationDescriptor,
+              irfs_params: algorithms.IRFSParams,
+              seed: int,
               fault_index: int = 0,
-              seed: int = 0,
               sigestlen: int = 400,
               sigestshift: int = -150,
               medfiltsize: int = 100,) -> BenchmarkResults:
@@ -119,12 +70,6 @@ def benchmark(desc: VibrationDescriptor,
     genres = generate_vibration(desc, seed=seed)
     fault = desc["faults"][fault_index]
     avg_event_period = avg_fault_period(desc, fault_index)
-    ordc = fault["ord"]
-    
-    ordc = ordc
-    ordmin = ordc-.5
-    ordmax = ordc+.5
-
 
     dataname = desc["healthy_component"]["dataname"]
     # vib = util.get_armodel(dataname).process(genres["signal"])
@@ -136,14 +81,12 @@ def benchmark(desc: VibrationDescriptor,
     resid_ar = armodel.residuals(vib)
     resid_ml = mlmodel.residuals(vib)
 
-    score_med_results = algorithms.score_med(resid_ml, medfiltsize, [(ordmin, ordmax)])
-    residf = score_med_results["filtered"]
+    #score_med_results = algorithms.score_med(resid_ml, medfiltsize, [(ordmin, ordmax)])
+    #residf = score_med_results["filtered"]
 
     # IRFS method
-    spos1 = algorithms.enedetloc(residf, search_intervals=[(ordmin, ordmax)])
-    irfs = algorithms.irfs(residf, spos1, ordmin, ordmax, sigestlen, sigestshift,
-                           vibration=vib)
-    irfs_result, = deque(irfs, maxlen=1)
+    irfs = algorithms.irfs(irfs_params, resid_ml)
+    irfs_result = deque((next(irfs) for i in range(10)), maxlen=1).pop()
 
     # irfs_out = np.correlate(resid_ml.y, irfs_result["sigest"], mode="valid")
     # irfs_filt = Signal(irfs_out, resid_ml.x[:-len(irfs_result["sigest"])+1],
@@ -184,7 +127,7 @@ def benchmark(desc: VibrationDescriptor,
         "eosp": genres["eosp"],
         "event_labels": genres["event_labels"],
         "methods": {
-            "irfs": {"sigest": irfs_result["sigest_vib"], "eosp": irfs_result["eosp"]},
+            "irfs": {"sigest": irfs_result.sigest, "eosp": irfs_result.eot},
             "med": {"sigest": sigest_med, "eosp": medout.x[medpeaks]},
             "sk": {"sigest": sigest_sk, "eosp": skout.x[skpeaks]},
             "armed": {"sigest": sigest_armed, "eosp": armedout.x[armedpeaks]},
@@ -241,10 +184,13 @@ def snr_experiment(seed: int, score_func: Callable[[BenchmarkResults], Any],
     """General SNR experiment. This function is called by monte-carlo
     experiments using multiprocessing and therefore needs to be defined
     on module-level."""
+    ordf = 5.0
+    fs = 51200
+    seed = 0
 
     desc: VibrationDescriptor = {
         "length": 100000,
-        "sample_frequency": 51200,
+        "sample_frequency": fs,
         "shaft_frequency": 1000/60,
         "snr": snr,
         "healthy_component": {
@@ -253,7 +199,7 @@ def snr_experiment(seed: int, score_func: Callable[[BenchmarkResults], Any],
         },
         "faults": [
             {
-                "ord": 5.0,
+                "ord": ordf,
                 "signature": signature,
                 "std": 0.01,
             }
@@ -263,8 +209,14 @@ def snr_experiment(seed: int, score_func: Callable[[BenchmarkResults], Any],
             "signature": DEFAULT_ANOMALY_SIGNATURE(np.arange(1000)),
         }
     }
+    
+    irfs_params = algorithms.IRFSParams(fmin=ordf-0.5, fmax=ordf+0.5,
+                                        signature_length=200,
+                                        signature_shift=-20,
+                                        hyst_ed=0.8)
 
-    return score_func(benchmark(desc, seed=seed), *score_args)
+    benchmark_results = benchmark(desc, irfs_params, seed=seed) 
+    return score_func(benchmark_results, *score_args)
 
 
 def benchmark_nmse(results: BenchmarkResults, signature):
@@ -281,13 +233,11 @@ def ex_nmse_snr(status: ExperimentStatus):
 
     iterations = 1
 
-    snr = np.logspace(-2, 0, 10).tolist()
-    dataname = [data.DataName.UIA, data.DataName.UNSW, data.DataName.CWRU]
-    # dataname = [data.DataName.UNSW]
+    snr = np.logspace(-2, 0, 5).tolist()
+    #dataname = [data.DataName.UIA, data.DataName.UNSW, data.DataName.CWRU]
+    dataname = [data.DataName.UNSW]
     anomalous = [0, 1000]
-    #signature = [DEFAULT_FAULT_SIGNATURE(np.arange(1000)).tolist()]
-    
-    signature = [sizeregr.signature_factory(15, 20, 1000).tolist()]
+    signature = [data.synth.signt_res(6.5e3, 0.001, 30, t=np.arange(800), fs=25.e3).tolist()]
 
     args_list = list(itertools.product(snr, dataname, anomalous, signature))
     score_args = (signature[0],)
@@ -364,7 +314,7 @@ def ex_fsize_snr(status: ExperimentStatus):
     anomalous = [0]
     fsize = 15
     shift = 20
-    signature = [sizeregr.signature_factory(fsize, shift, sizeregr.INPUT_LENGTH).tolist()]
+    signature = [data.synth.signt_res(6.5e3, 0.001, 30, t=np.arange(sizeregr.INPUT_LENGTH), fs=25.e3).tolist()]
 
     args_list = list(itertools.product(snr, dataname, anomalous, signature))
     score_args = (fsize, model)
@@ -427,11 +377,32 @@ def eosp_metric(ordf: float,
 
 
 def common_eosp_experiment(snr, seed):
-    residual: VibrationDescriptor = DESCRIPTOR_TEMPLATE.copy()
-    residual["snr"] = snr
-    results = benchmark(residual, seed=seed)
+    ordf = 5.0
+    desc: VibrationDescriptor = {
+        "length": 100000,
+        "sample_frequency": 51200,
+        "shaft_frequency": 1000/60,
+        "snr": snr,
+        "healthy_component": {
+            "dataname": "unsw",
+            "signal_id": "Test 1/6Hz/vib_000002663_06.mat",
+        },
+        "faults": [
+            {
+                "ord": ordf,
+                "signature": data.synth.signt_res(6.5e3, 0.001, 30, t=np.arange(800), fs=25.e3).tolist(),
+                "std": 0.01,
+            }
+        ]
+    }
+    
+    irfs_params = algorithms.IRFSParams(fmin=ordf-0.5, fmax=ordf+0.5,
+                                        signature_length=200,
+                                        signature_shift=-20,
+                                        hyst_ed=0.8)
+
+    results = benchmark(desc, irfs_params, seed=seed)
     eosp_true = results["eosp"][results["event_labels"]==1]
-    ordf = residual["faults"][0]["ord"]
 
     metric = [eosp_metric(ordf, eosp_true, mr["eosp"])
                 for mr in results["methods"].values()]
@@ -440,16 +411,14 @@ def common_eosp_experiment(snr, seed):
 
 
 @experiment(OUTPUT_PATH, json=False)
-def ex_eosp():
+def ex_eosp(status: ExperimentStatus):
     snr_to_eval = np.logspace(-2, 0, 10).tolist()
-    list_args = []
-    for snr in snr_to_eval:
-        for seed in range(MC_ITERATIONS):
-            args = (snr, seed)
-            list_args.append(args)
-
-    with Pool(4) as p:
-        metric = p.starmap(common_eosp_experiment, list_args)
+    status.max_progress = len(snr_to_eval)
+    for i, snr in enumerate(snr_to_eval):
+        args = [(snr, seed) for seed in range(MC_ITERATIONS)]
+        with Pool(MAX_WORKERS) as p:
+            metric = p.starmap(common_eosp_experiment, args)
+        status.progress = i+1
     
     return snr_to_eval, metric
 

@@ -41,6 +41,20 @@ def avg_fault_period(desc: VibrationDescriptor, fault_index: int = 0) -> float:
             /desc["shaft_frequency"])/desc["faults"][fault_index]["ord"]
 
 
+def signt_stpres(f, tau, t):
+    return (np.exp(-t/(3*tau))*(-np.cos(2*np.pi*(f/6)*t))
+            +np.exp(-t/(5*tau)))*(t>=0.0)
+
+
+def signt_impres(f, tau, t):
+    return np.exp(-t/tau)*np.sin(2*np.pi*f*t)*(t>=0.0)
+
+
+def signt_res(f, tau, d, t, fs=1.0):
+    """t in terms of samples"""
+    return signt_stpres(f, tau, t/fs)/20 + signt_impres(f, tau, (t-d)/fs)
+
+
 #common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
 def DEFAULT_ANOMALY_SIGNATURE(n):
     return (n>=0)*np.sinc(n/2+1)
@@ -146,7 +160,7 @@ def generate_vibration(desc: VibrationDescriptor, seed=0):
     # Instantiate and return signal object
     dx = 1/(desc["sample_frequency"]/desc["shaft_frequency"])
     out = Signal.from_uniform_samples(noise + resid, dx)
-    event_shaft_positions = np.concatenate(eosp_)*dx
+    event_shaft_positions = np.concatenate(eosp_)#*dx
     event_labels = np.concatenate(elbl_)
     return {
         "signal": out,

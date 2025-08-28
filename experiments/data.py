@@ -21,6 +21,7 @@ from simsim import experiment, presentation
 
 output_path = "results/data"
 
+MAX_WORKERS = load_config().get("max_workers", None)
 
 def detect_and_sort(filt: sig.Signal, ordc, ordmin, ordmax, weightfunc=None, maxevents=10000):
     """Detects events using peak detection and sorts them by peak height.
@@ -65,7 +66,7 @@ class Benchmark(TypedDict):
     method_outputs: list[MethodOutput]
     ordc: float
     events_max: int
-    irfs_result: algorithms.IRFSIteration
+    irfs: dict
 
 
 @dataclass
@@ -74,6 +75,7 @@ class BenchmarkParams:
     siglen: int
     sigshift: int
     ordc: float
+    irfs: algorithms.IRFSParams
     med_filtsize: int
     sk_nperseg: int
     siglen_vib: int | None = None
@@ -104,22 +106,21 @@ def benchmark_experiment(dataname: data.DataName, signal_id: str,
     # resid_ml = resid_ar # for verifying method still works like before
     resid_ml = mlmodel.residuals(signal)
 
-    # score_med_results = algorithms.score_med(resid_ml, params.med_filtsize, [(ordmin, ordmax)])
-    # residf = score_med_results["filtered"]
+    #score_med_results = algorithms.score_med(resid_ml, params.med_filtsize, [(ordmin, ordmax)])
+    #residf = score_med_results["filtered"]
 
     # IRFS method.
-    spos1 = algorithms.enedetloc(resid_ml, search_intervals=[(ordmin, ordmax)])
-    irfs = algorithms.irfs(resid_ml, spos1, ordmin, ordmax, params.siglen, params.sigshift,
-                           vibration=signal, vibration_sigsize=params.siglen_vib)
-    irfs_result, = deque(irfs, maxlen=1)
+    irfs = algorithms.irfs(params.irfs, resid_ml)
+    irfs_result = deque((next(irfs) for i in range(10)), maxlen=1).pop()
+
     # TODO: See if we can use the EOSPs output by `algorithms.irfs` directly
     # in `detect_and_sort` instead of what we do in the following lines
-    irfs_out = np.correlate(resid_ar.y, irfs_result["sigest"], mode="valid")
-    irfs_filt = sig.Signal(irfs_out, resid_ar.x[:-len(irfs_result["sigest"])+1],
+    irfs_out = np.correlate(resid_ar.y, irfs_result.sigest, mode="valid")
+    irfs_filt = sig.Signal(irfs_out, resid_ar.x[:-len(irfs_result.sigest)+1],
                         resid_ar.uniform_samples)
     def irfs_weight(spos):
-        z = evt.map_circle(irfs_result["ordf"], spos)
-        u = scipy.stats.vonmises.pdf(z, irfs_result["kappa"], loc=irfs_result["mu"])
+        z = evt.map_circle(irfs_result.freq, spos)
+        u = scipy.stats.vonmises.pdf(z, irfs_result.kappa, loc=irfs_result.mu)
         return u
     
     irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, params.ordc, ordmin, ordmax, weightfunc=irfs_weight)
@@ -151,7 +152,11 @@ def benchmark_experiment(dataname: data.DataName, signal_id: str,
         "signal_id": signal_id,
         "ordc": params.ordc,
         "events_max": events_max,
-        "irfs_result": irfs_result,
+        "irfs": {
+                "sigest": irfs_result.sigest,
+                "certainty": irfs_result.certainty,
+                "eosp": irfs_result.eot,
+        },
         "method_outputs": [
             {
                 "name": "IRFS",
@@ -204,14 +209,27 @@ def bmexp(args):
 def uia() -> list[Benchmark]:
     cfg = load_config()
     data_path = data.data_path(data.DataName.UIA)
-    benchmark_params = BenchmarkParams(1000, 400, -150, 6.7087166, 100, 1000, 600)
+    ordc = 6.7087166
+    siglen = 200
+    sigshift = -20
+    irfs_params = algorithms.IRFSParams(fmin=ordc-0.5, fmax=ordc+0.5,
+                                        signature_length=siglen,
+                                        signature_shift=sigshift,
+                                        hyst_ed=0.8)
+    benchmark_params = BenchmarkParams(rpm=1000,
+                                       siglen=siglen,
+                                       sigshift=sigshift,
+                                       ordc=ordc,
+                                       irfs=irfs_params,
+                                       med_filtsize=100,
+                                       sk_nperseg=1000)
     ex_args = []
     for file_path in data_path.glob("y2016-m09-d24/*.h5"):
         if not "1000rpm" in str(file_path):
             continue # we select only the 1000rpm signals
         ex_args.append((data.DataName.UIA, file_path, benchmark_params))
 
-    with ProcessPoolExecutor(cfg.get("max_workers", None)) as executor:
+    with ProcessPoolExecutor(MAX_WORKERS) as executor:
         benchmarks = list(executor.map(bmexp, ex_args))
     
     return benchmarks
@@ -220,8 +238,21 @@ def uia() -> list[Benchmark]:
 @experiment(output_path)
 def unsw() -> list[Benchmark]:
     cfg = load_config()
-    data_path = data.data_path(data.DataName.UIA)
-    benchmark_params = BenchmarkParams(360, 200, -100, 3.56, 100, 256, 600)
+    data_path = data.data_path(data.DataName.UNSW)
+    ordc = 3.56
+    siglen = 200
+    sigshift = -20
+    irfs_params = algorithms.IRFSParams(fmin=ordc-0.5, fmax=ordc+0.5,
+                                        signature_length=siglen,
+                                        signature_shift=sigshift,
+                                        hyst_ed=0.8)
+    benchmark_params = BenchmarkParams(rpm=360,
+                                       siglen=siglen,
+                                       sigshift=sigshift,
+                                       ordc=3.56,
+                                       irfs=irfs_params,
+                                       med_filtsize=100,
+                                       sk_nperseg=256)
     ex_args =  []
     for file_path in data_path.glob("Test 1/6Hz/*.mat"):
         ex_args.append((data.DataName.UNSW, file_path, benchmark_params))
@@ -245,8 +276,19 @@ def cwru() -> list[Benchmark]:
             case _:
                 continue
 
-        benchmark_params = BenchmarkParams(dl_entry["rpm"], 400, -150, ordc,
-                                           100, 256, 600)
+        siglen = 400
+        sigshift = -150
+        irfs_params = algorithms.IRFSParams(fmin=ordc-0.5, fmax=ordc+0.5,
+                                            signature_length=siglen,
+                                            signature_shift=sigshift,
+                                            hyst_ed=0.8)
+        benchmark_params = BenchmarkParams(rpm=dl_entry["rpm"],
+                                           siglen=siglen,
+                                           sigshift=sigshift,
+                                           ordc=ordc,
+                                           irfs=irfs_params,
+                                           med_filtsize=100,
+                                           sk_nperseg=256)
         
         ex_args.append((data.DataName.CWRU, dl_entry["id"], benchmark_params))
     
@@ -301,13 +343,14 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
         if i == nrows-1:
             ax[i][0].set_xlabel("Detections")
         
-        ax[i][0].set_ylabel("True\npositive rate"
-                            +(f"\n{results["data_name"]}" if show_names else ""))
+        ax[i][0].set_ylabel("True\npositive rate")
+                            #f"\n{results['data_name']}" if show_names else "")
         # ax[i][1].yaxis.set_label_position("right")
+        ax[i][0].set_title(results["signal_id"])
 
         ax[i, 0].grid(which="both")
 
-        sigest = results["irfs_result"]["sigest_vib"]
+        sigest = results["irfs"]["sigest"]
         x = np.arange(len(sigest))*dx
         ax[i, 1].plot(x, sigest, c="k", lw=0.5)
         ax[i][1].set_ylabel("Signature\nestimate")
@@ -325,16 +368,34 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
 def present_uia(results: list[Benchmark]):
     present_benchmarks(results, include_idx=[2, 3, 4], dx=1/51200)
 
+@presentation(uia)
+def present_uia_all(results: list[Benchmark]):
+    n = 3
+    for i in range(0, len(results), n):
+        present_benchmarks(results, include_idx=range(i, i+n), dx=1/51200,
+                           show_names=True)
 
 @presentation(unsw)
 def present_unsw(results: list[Benchmark]):
     present_benchmarks(results, include_idx=[11, 12, 13], dx=1/51200)
 
+@presentation(unsw)
+def present_unsw_all(results: list[Benchmark]):
+    n = 3
+    for i in range(0, len(results), n):
+        present_benchmarks(results, include_idx=range(i, i+n), dx=1/51200,
+                           show_names=True)
 
 @presentation(cwru)
 def present_cwru(results: list[Benchmark]):
     present_benchmarks(results, include_names=["175", "176", "215"], dx=1/48000)
 
+@presentation(cwru)
+def present_cwru_all(results: list[Benchmark]):
+    n = 3
+    for i in range(0, len(results), n):
+        present_benchmarks(results, include_idx=range(i, i+n), dx=1/48000,
+                           show_names=True)
 
 @presentation(uia, unsw, cwru)
 def present_all_labeled(list_results: list[list[Benchmark]]):
@@ -352,16 +413,16 @@ def present_stacked_signatures(benchmark: Benchmark,
     model = util.get_mlmodel(dataname)
     rest = model.residuals(vibt)
     vib = sig.Signal(vibt.y, vibt.x*rpm/60, uniform_samples=vibt.uniform_samples)
-    eosp = benchmark["irfs_result"]["eosp"]
+    eosp = benchmark["irfs"]["eosp"]
     dx = 1/fs
-    sigest = benchmark["irfs_result"]["sigest_vib"]
+    sigest = benchmark["irfs"]["sigest"]
     siglen = len(sigest)
     x = np.arange(siglen)*dx#-res.x[0]
 
     eosp_to_plot = eosp[idx_eosp]
     idx_vib = vib.idx_closest(eosp_to_plot)#+ar_model.p
 
-    crt = benchmark["irfs_result"]["certainty"]
+    crt = benchmark["irfs"]["certainty"]
     crtsort = np.sort(crt)[::-1]
     # sigest_vib = utl.estimate_signature(vib, siglen, x=eosp, weights=crtsort,
     #                                     n0=ar_model.p)
