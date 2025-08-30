@@ -160,11 +160,13 @@ def train(dataloader: DataLoader, signal_idx: Sequence, epochs: int,
     model = Model()
     
     epoch = 0
+    loss_history = []
     if not overwrite:
         try:
             state = torch.load(savepath)
             model.load_state_dict(state["model_state_dict"])
             epoch = state["epoch"]+1
+            loss_history = state["loss_history"]
         except Exception:
                 print("could not load model state")
 
@@ -193,15 +195,17 @@ def train(dataloader: DataLoader, signal_idx: Sequence, epochs: int,
             loss.backward()
 
             optimizer.step()
-            epoch_loss.append(loss)
+            epoch_loss.append(loss.item())
             print(f"e{epoch},s{i}\t{loss.item()}")
         
+        loss_history.append(loss.item())
         # save model after every epoch
         torch.save({
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "loss": loss,
+            "loss_history": loss_history,
         }, savepath)
     
 
@@ -222,6 +226,20 @@ class MLSignalModel(SignalModel):
         hest = self.process(signal)
         out = signal-hest
         return out
+
+
+def plot_history(name: data.DataName):
+    import matplotlib.pyplot as plt
+    savepath = model_filepath(name)
+    state = torch.load(savepath)
+    epoch = state["epoch"]+1
+    loss_history = state["loss_history"]
+    plt.figure()
+    plt.plot(range(epoch), loss_history)
+    plt.title(f"training history for\n\"{name}\" dataset")
+    plt.xlabel("epoch")
+    plt.ylabel("loss")
+    plt.show()
 
 
 if __name__ == "__main__":
@@ -245,8 +263,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    not_implemented = NotImplementedError("program not implemented for this dataset")
 
     dl = data.dataloader(args.name)
     data_path = data.data_path(args.name)
