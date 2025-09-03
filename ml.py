@@ -49,41 +49,32 @@ class Model(torch.nn.Module):
                                                 kernel_size, stride=stride,
                                                 dilation=dilation)]
         self.activation = torch.nn.ELU()
-        self.bnorm_down = [torch.nn.BatchNorm1d(1)]
-        self.bnorm_down += [torch.nn.BatchNorm1d(hidden_channels)
-                           for _ in range(hidden_channels)]
-        self.bnorm_up = [torch.nn.BatchNorm1d(hidden_channels)
-                         for _ in range(hidden_channels)]
-        self.bnorm_up += [torch.nn.BatchNorm1d(1)]
 
-        self.layers = torch.nn.ModuleList((*self.downsample, *self.upsample,
-                                           *self.bnorm_down, *self.bnorm_up))
+        self.layers = torch.nn.ModuleList((*self.downsample, *self.upsample))
 
     def forward(self, x):
         # shape(x) = (N, 1, L)
-        #mean = torch.mean(x, dim=-1, keepdim=True)
-        #x -= mean
-        #std = torch.std(x, dim=-1, keepdim=True)
-        #x /= 3*std
+        mean = torch.mean(x, dim=-1, keepdim=True)
+        x -= mean
+        std = torch.std(x, dim=-1, keepdim=True)
+        x /= 3*std
 
         padlog = torch.zeros((len(self.downsample)), dtype=int)
-        for i, (layer, bnorm) in enumerate(zip(self.downsample, self.bnorm_down)):
+        for i, layer in enumerate(self.downsample):
             lin = x.shape[-1]
-            x = bnorm(x)
             x = layer(x)
             lout = x.shape[-1]
             padlog[i] = lin//self.stride-lout
             x = self.activation(x)
         
         padlog = torch.flip(padlog, (0,))
-        for i, (layer, bnorm) in enumerate(zip(self.upsample, self.bnorm_up)):
-            x = bnorm(x)
+        for i, layer in enumerate(self.upsample):
             x = layer(x)
             x = torch.nn.functional.pad(x, (0, padlog[i]))
             if i<len(self.upsample)-1:
                 x = self.activation(x)
-        #x *= 3*std
-        #x -= torch.mean(x, dim=-1, keepdim=True)
+        x *= 3*std
+        x += mean
         return x
     
     @classmethod
@@ -158,6 +149,7 @@ def train(dataloader: DataLoader, signal_idx: Sequence, epochs: int,
           siglen: int, savepath: str, overwrite = False):
     
     model = Model()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     
     epoch = 0
     loss_history = []
@@ -165,13 +157,13 @@ def train(dataloader: DataLoader, signal_idx: Sequence, epochs: int,
         try:
             state = torch.load(savepath)
             model.load_state_dict(state["model_state_dict"])
+            optimizer.load_state_dict(state["optimizer_state_dict"])
             epoch = state["epoch"]+1
             loss_history = state["loss_history"]
         except Exception:
                 print("could not load model state")
 
     loss_fn = torch.nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     model.train()
     range_epochs = range(epoch, epoch+epochs)
