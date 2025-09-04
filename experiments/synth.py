@@ -86,7 +86,8 @@ def benchmark(desc: VibrationDescriptor,
 
     # IRFS method
     irfs = algorithms.irfs(irfs_params, resid_ml)
-    irfs_result = deque((next(irfs) for i in range(10)), maxlen=1).pop()
+    for i, irfs_result in enumerate(irfs):
+        if i >= 10: break
 
     # irfs_out = np.correlate(resid_ml.y, irfs_result["sigest"], mode="valid")
     # irfs_filt = Signal(irfs_out, resid_ml.x[:-len(irfs_result["sigest"])+1],
@@ -187,6 +188,7 @@ def snr_experiment(seed: int, score_func: Callable[[BenchmarkResults], Any],
     ordf = 5.0
     fs = 51200
     seed = 0
+    signature_anomalous = data.synth.signt_res(13.e3, 0.001, 30, t=np.arange(800), fs=25.e3).tolist()
 
     desc: VibrationDescriptor = {
         "length": 100000,
@@ -206,7 +208,7 @@ def snr_experiment(seed: int, score_func: Callable[[BenchmarkResults], Any],
         ],
         "anomaly": {
             "amount": anomalous,
-            "signature": DEFAULT_ANOMALY_SIGNATURE(np.arange(1000)),
+            "signature": signature_anomalous,
         }
     }
     

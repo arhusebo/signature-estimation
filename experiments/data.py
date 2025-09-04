@@ -111,7 +111,8 @@ def benchmark_experiment(dataname: data.DataName, signal_id: str,
 
     # IRFS method.
     irfs = algorithms.irfs(params.irfs, resid_ml)
-    irfs_result = deque((next(irfs) for i in range(10)), maxlen=1).pop()
+    for i, irfs_result in enumerate(irfs):
+        if i >= 10: break
 
     # TODO: See if we can use the EOSPs output by `algorithms.irfs` directly
     # in `detect_and_sort` instead of what we do in the following lines

@@ -113,6 +113,8 @@ def irfs(params: IRFSParams,
     # subsequent iterations
     i = 0
     while (i:=i+1):
+        if len(iter.eot)==0:
+            break
         iter = irfs_iteration(params, signal, iter.eot, normthr=normthr)
         yield iter
 
