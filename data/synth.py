@@ -57,10 +57,12 @@ def signt_res(f, tau, d, t, fs=1.0):
 
 #common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
 def DEFAULT_ANOMALY_SIGNATURE(n):
-    return (n>=0)*np.sinc(n/2+1)
+    return signt_res(13.e3, 0.001, 30, n, fs=25.e3)
+    #return (n>=0)*np.sinc(n/2+1)
 
-def DEFAULT_FAULT_SIGNATURE(n):
-    return (n>=0)*np.sinc(n/8+1)
+def DEFAULT_FAULT_SIGNATURE(n, d=30):
+    return signt_res(6.5e3, 0.001, d, n, fs=25.e3)
+    #return (n>=0)*np.sinc(n/8+1)
 
 COMMON_RESIDUAL: VibrationDescriptor = {
     "length": 100000,

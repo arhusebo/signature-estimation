@@ -1,5 +1,6 @@
 from multiprocessing import Pool
 from typing import TypedDict, Callable, NotRequired, Any
+from dataclasses import dataclass
 from collections import deque
 from collections.abc import Sequence
 import itertools
@@ -16,7 +17,8 @@ from faultevent.event import event_spectrum
 
 import algorithms
 import data
-from data.synth import generate_vibration, avg_fault_period, VibrationDescriptor
+from data.synth import generate_vibration, avg_fault_period, VibrationDescriptor,\
+    DEFAULT_FAULT_SIGNATURE, DEFAULT_ANOMALY_SIGNATURE
 import sizeregr
 import util
 from config import load_config
@@ -188,7 +190,7 @@ def snr_experiment(seed: int, score_func: Callable[[BenchmarkResults], Any],
     ordf = 5.0
     fs = 51200
     seed = 0
-    signature_anomalous = data.synth.signt_res(13.e3, 0.001, 30, t=np.arange(800), fs=25.e3).tolist()
+    signature_anomalous = DEFAULT_ANOMALY_SIGNATURE(np.arange(800)).tolist()
 
     desc: VibrationDescriptor = {
         "length": 100000,
@@ -239,7 +241,7 @@ def ex_nmse_snr(status: ExperimentStatus):
     #dataname = [data.DataName.UIA, data.DataName.UNSW, data.DataName.CWRU]
     dataname = [data.DataName.UNSW]
     anomalous = [0, 1000]
-    signature = [data.synth.signt_res(6.5e3, 0.001, 30, t=np.arange(800), fs=25.e3).tolist()]
+    signature = [DEFAULT_FAULT_SIGNATURE(np.arange(800)).tolist()]
 
     args_list = list(itertools.product(snr, dataname, anomalous, signature))
     score_args = (signature[0],)
@@ -306,32 +308,77 @@ def benchmark_fsize(results: BenchmarkResults, fsize, model):
     pred_err = map(partial(sizeregr.pred_err_np, fsize, model), sigest)
     return list(pred_err)
 
+
+@dataclass
+class FseExperimentParams:
+    model: sizeregr.Model
+    seed: int
+    snr: float
+    fsize: int
+    shift: int
+    dataname: data.DataName
+
+
+def fse(seed: int, snr: float, fsize: int):
+    """FSE SNR experiment. This function is called by monte-carlo
+    experiments using multiprocessing and therefore needs to be defined
+    on module-level."""
+    ordf = 5.0
+    fs = 51200
+    signature = DEFAULT_FAULT_SIGNATURE(np.arange(800), fsize)
+    model = sizeregr.Model.load(sizeregr.model_filepath())
+
+    desc: VibrationDescriptor = {
+        "length": 100000,
+        "sample_frequency": fs,
+        "shaft_frequency": 1000/60,
+        "snr": snr,
+        "healthy_component": {
+            "dataname": "uia",
+            "signal_id": SIGNAL_ID_MAP["uia"]
+        },
+        "faults": [
+            {
+                "ord": ordf,
+                "signature": signature,
+                "std": 0.01,
+            }
+        ]
+    }
+    
+    irfs_params = algorithms.IRFSParams(fmin=ordf-0.5, fmax=ordf+0.5,
+                                        signature_length=200,
+                                        signature_shift=-40,
+                                        hyst_ed=0.8)
+
+    benchmark_results = benchmark(desc, irfs_params, seed=seed) 
+    
+    sigest = (np.array(m["sigest"], dtype=np.float32)
+              for m in benchmark_results["methods"].values())
+    return list(map(partial(sizeregr.pred_err_np, fsize, model), sigest))
+
+
 @experiment(OUTPUT_PATH, json=True)
 def ex_fsize_snr(status: ExperimentStatus):
-    """Monte-carlo simulation of signature NMSE for varying SNR"""
-    model = sizeregr.Model.load(sizeregr.model_filepath())
-    
-    snr = np.logspace(-2, 0, 10).tolist()
-    dataname = [data.DataName.UNSW]
-    anomalous = [0]
-    fsize = 15
-    shift = 20
-    signature = [data.synth.signt_res(6.5e3, 0.001, 30, t=np.arange(sizeregr.INPUT_LENGTH), fs=25.e3).tolist()]
+    """Monte-carlo simulation of fault size estimation (FSE) for varying SNR"""
+    exp_params = []
 
-    args_list = list(itertools.product(snr, dataname, anomalous, signature))
-    score_args = (fsize, model)
-    
-    status.max_progress = len(args_list)
+    # experiment variables
+    fsize = lambda i: 5+int(25*i/MC_ITERATIONS)
+    snr_values = np.logspace(-2, 0, 10)
+
+    status.max_progress = len(snr_values)
 
     err = []
-    for i, args in enumerate(args_list):
-        args_ = [(seed, benchmark_fsize, *args, score_args) for seed in range(MC_ITERATIONS)]
+    for progress, snr in enumerate(snr_values):
+        args_ = [(i, fsize(i), snr) for i in range(MC_ITERATIONS)]
         with Pool(MAX_WORKERS) as p:
-            err_ = p.starmap(snr_experiment, args_)
+            err_ = p.starmap(fse, args_)
             err.append(np.nanmean(err_, axis=0).tolist())
-        status.progress = i+1
         
-    return args_list, err
+        status.progress = progress+1
+
+    return snr_values.tolist(), err
 
 
 @presentation(ex_fsize_snr)
@@ -343,8 +390,7 @@ def pr_fsize_snr(results):
     cmap_idx = [0, 1, 2, 1, 2, 3]
     _, ax = plt.subplots(1, 1, sharex=True, figsize=(3.5, 2.0))
     
-    args_list, err = results
-    snr = [arg[0] for arg in args_list]
+    snr, err = results
     snr_db = 10*np.log10(snr)
     errarr = np.array(err).T
     for j, err_ in enumerate(errarr):

@@ -4,8 +4,9 @@ from scipy.signal import iirfilter, lfilter
 import torch
 
 from config import load_config
+from data.synth import DEFAULT_FAULT_SIGNATURE
 
-INPUT_LENGTH = 100 # signature length for model input
+INPUT_LENGTH = 200 # signature length for model input
 
 def model_filepath():
     model_path = pathlib.Path(load_config()["ml"]["model_path"])
@@ -66,29 +67,6 @@ class Model(torch.nn.Module):
         return model
 
 
-def signature_input(fsize: int, shift: int, n: int):
-    return -0.1*(shift<n<shift+fsize) + 1.0*(n==shift+fsize)
-
-
-vec_signature_input = np.vectorize(signature_input)
-
-
-def filter_input(x):
-    b, a = iirfilter(4, (0.4, 0.6),)
-    return lfilter(b, a, x)
-
-
-def signature_factory(fsize: int, shift: int, length: int):
-    n = np.arange(length)
-    x = vec_signature_input(fsize, shift, n)
-    y = filter_input(x)
-    return y.astype(np.float32)
-
-
-def samples2fun(y):
-    return lambda n: y[n] if len(y)>n>=0 else 0.0
-
-
 def create_batch(size: int, noise_std=0.0):
     n = torch.arange(0, INPUT_LENGTH)
     labels = np.zeros(size, dtype=np.float32)
@@ -96,8 +74,9 @@ def create_batch(size: int, noise_std=0.0):
     for i in range(size):
         fsize = np.random.randint(5, 30)
         shift = np.random.randint(10, 25)
-        siginp = vec_signature_input(fsize, shift, n)
-        batch[i] = filter_input(siginp)+np.random.randn(len(siginp))*noise_std
+        sig = DEFAULT_FAULT_SIGNATURE(n[:-shift], fsize)
+        batch[i][shift:] = sig
+        batch += np.random.randn(size, INPUT_LENGTH)*noise_std
         labels[i] = fsize
     
     return batch[:,np.newaxis,:], labels
