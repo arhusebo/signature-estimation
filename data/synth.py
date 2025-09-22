@@ -1,5 +1,6 @@
 from typing import TypedDict, Callable, NotRequired
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
@@ -55,31 +56,12 @@ def signt_res(f, tau, d, t, fs=1.0):
     return signt_stpres(f, tau, t/fs)/20 + signt_impres(f, tau, (t-d)/fs)
 
 
-#common_fault_signature = lambda n: (n>=0)*np.sinc(n/8+1)
 def DEFAULT_ANOMALY_SIGNATURE(n):
     return signt_res(13.e3, 0.001, 30, n, fs=25.e3)
-    #return (n>=0)*np.sinc(n/2+1)
+
 
 def DEFAULT_FAULT_SIGNATURE(n, d=30):
     return signt_res(6.5e3, 0.001, d, n, fs=25.e3)
-    #return (n>=0)*np.sinc(n/8+1)
-
-COMMON_RESIDUAL: VibrationDescriptor = {
-    "length": 100000,
-    "sample_frequency": 51200,
-    "shaft_frequency": 1000/60,
-    "healthy_component": {
-        "dataname": "unsw",
-        "signal_id": "Test 1/6Hz/vib_000002663_06.mat",
-    },
-    "faults": [
-        {
-            "ord": 5.0,
-            "signature": DEFAULT_FAULT_SIGNATURE,
-            "std": 0.01,
-        }
-    ]
-}
 
 
 def sigtilde(sigloc: Sequence[int], n: int, sig_samp = None, sig_func: Callable[[int], float] = None, fs=1.0):
@@ -109,13 +91,19 @@ def signature_train(eosp: Sequence[float], signature, signal_length, fs, fshaft)
     return out
 
 
-def generate_vibration(desc: VibrationDescriptor, seed=0):
+@dataclass
+class VibrationData:
+    desc: VibrationDescriptor
+    signal: npt.NDArray[np.float64]
+    eosp: npt.NDArray[np.float64]
+    event_labels: npt.NDArray[np.int_]
+
+
+
+def generate_vibration(desc: VibrationDescriptor, seed=0) -> VibrationData:
     """Generates a residual signal according to the provided
     ResidualDescriptor. Always generates the same result unless a
     different value of 'seed' is used.
-    
-    Returns a dictionary containing the signal, event
-    labels and EOSPs.
     """
     rng = np.random.default_rng(seed)
     resid = np.zeros((desc["length"]), dtype=float)
@@ -164,8 +152,5 @@ def generate_vibration(desc: VibrationDescriptor, seed=0):
     out = Signal.from_uniform_samples(noise + resid, dx)
     event_shaft_positions = np.concatenate(eosp_)#*dx
     event_labels = np.concatenate(elbl_)
-    return {
-        "signal": out,
-        "eosp": event_shaft_positions,
-        "event_labels": event_labels,
-    }
+    return VibrationData(desc=desc, signal=out, eosp=event_shaft_positions,
+                         event_labels=event_labels)

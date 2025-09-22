@@ -17,7 +17,8 @@ from faultevent.event import event_spectrum
 
 import algorithms
 import data
-from data.synth import generate_vibration, avg_fault_period, VibrationDescriptor,\
+from data.synth import generate_vibration, avg_fault_period,\
+    VibrationDescriptor, VibrationData,\
     DEFAULT_FAULT_SIGNATURE, DEFAULT_ANOMALY_SIGNATURE
 import sizeregr
 import util
@@ -50,32 +51,34 @@ def estimate_signat(signal: Signal, indices: Sequence[int],
     return sig
 
 
-class MethodResults(TypedDict):
-    sigest: Sequence[float]
-    eosp: Sequence[float]
+@dataclass
+class MethodResult:
+    name: str
+    sigest: npt.NDArray[np.float64]
+    eosp: npt.NDArray[np.float64]
 
 
-class BenchmarkResults(TypedDict):
-    methods: dict[str, MethodResults]
-    eosp: Sequence[float]
-    event_labels: Sequence[int]
-
-
-def benchmark(desc: VibrationDescriptor,
+def benchmark(vibdata: VibrationData,
               irfs_params: algorithms.IRFSParams,
-              seed: int,
               fault_index: int = 0,
               sigestlen: int = 400,
               sigestshift: int = -150,
-              medfiltsize: int = 100,) -> BenchmarkResults:
+              medfiltsize: int = 100,) -> list[MethodResult]:
+    """Using the given `VibrationData` benchmark IRFS against signature
+    estimates obtained using
+    - spectral kurtosis (SK),
+    - autoregressive (AR) pre-filtering followed by SK,
+    - minimum-entropy deconvolution (MED),
+    - autoregressive (AR) pre-filtering followed by MED, and finally
+    - a compound method using a combination of the previous algorithms.
+    """
 
-    genres = generate_vibration(desc, seed=seed)
-    fault = desc["faults"][fault_index]
-    avg_event_period = avg_fault_period(desc, fault_index)
+    fault = vibdata.desc["faults"][fault_index]
+    avg_event_period = avg_fault_period(vibdata.desc, fault_index)
 
-    dataname = desc["healthy_component"]["dataname"]
+    dataname = vibdata.desc["healthy_component"]["dataname"]
     # vib = util.get_armodel(dataname).process(genres["signal"])
-    vib = genres["signal"]
+    vib = vibdata.signal
 
     armodel = util.get_armodel(dataname)
     mlmodel = util.get_mlmodel(dataname)
@@ -126,18 +129,12 @@ def benchmark(desc: VibrationDescriptor,
     cmpeaks, _ = scipy.signal.find_peaks(cmenv, distance=avg_event_period/2)
     sigest_cm = estimate_signat(vib, cmpeaks, sigestlen, sigestshift)
 
-    results: BenchmarkResults = {
-        "eosp": genres["eosp"],
-        "event_labels": genres["event_labels"],
-        "methods": {
-            "irfs": {"sigest": irfs_result.sigest, "eosp": irfs_result.eot},
-            "med": {"sigest": sigest_med, "eosp": medout.x[medpeaks]},
-            "sk": {"sigest": sigest_sk, "eosp": skout.x[skpeaks]},
-            "armed": {"sigest": sigest_armed, "eosp": armedout.x[armedpeaks]},
-            "arsk": {"sigest": sigest_arsk, "eosp": arskout.x[arskpeaks]},
-            "cm": {"sigest": sigest_cm, "eosp": cmout.x[cmpeaks]},
-        },
-    }
+    results = [MethodResult("irfs", irfs_result.sigest, irfs_result.eot),
+               MethodResult("med", sigest_med, medout.x[medpeaks]),
+               MethodResult("sk", sigest_sk, skout.x[skpeaks]),
+               MethodResult("armed", sigest_armed, armedout.x[armedpeaks]),
+               MethodResult("arsk", sigest_arsk, arskout.x[arskpeaks]),
+               MethodResult("cm", sigest_cm, cmout.x[cmpeaks]),]
 
     return results
 
@@ -167,7 +164,7 @@ def nmse_shift(signature, estimate, shiftmax=100):
     return nmse, n
 
 
-def estimate_nmse(estimate, signature, maxshift=100):
+def estimate_nmse(signature, maxshift, estimate):
     """Estimate the NMSE between a signature `estimate` and the true `signature`"""
     nmse, _ = nmse_shift(signature, estimate, maxshift)
     idxmin = np.argmin(nmse)
@@ -181,7 +178,7 @@ SIGNAL_ID_MAP = {
 }
 
 
-def snr_experiment(seed: int, score_func: Callable[[BenchmarkResults], Any],
+def snr_experiment(seed: int, score_func: Callable[[MethodResult], Any],
                    snr: float, dataname: data.DataName,
                    anomalous: int, signature, score_args=()):
     """General SNR experiment. This function is called by monte-carlo
@@ -219,16 +216,14 @@ def snr_experiment(seed: int, score_func: Callable[[BenchmarkResults], Any],
                                         signature_shift=-20,
                                         hyst_ed=0.8)
 
-    benchmark_results = benchmark(desc, irfs_params, seed=seed) 
+    vibdata = generate_vibration(desc, seed=seed)
+    benchmark_results = benchmark(vibdata, irfs_params) 
     return score_func(benchmark_results, *score_args)
 
 
-def benchmark_nmse(results: BenchmarkResults, signature):
-    f = lambda x: estimate_nmse(estimate=x["sigest"],
-                                signature=signature,
-                                maxshift=1000)
-    nmse = map(f, results["methods"].values())
-    return list(nmse)
+def benchmark_nmse(results: list[MethodResult], signature):
+    return list(map(partial(estimate_nmse, signature, 1000),
+               (result.sigest for result in results)))
 
 
 @experiment(OUTPUT_PATH, json=True)
@@ -257,6 +252,9 @@ def ex_nmse_snr(status: ExperimentStatus):
         
     return args_list, rmse
 
+
+# Present NMSE vs SNR results
+
 def results_predicate(dataname: data.DataName, anomalous: bool):
     def filt(result):
         args, _ = result
@@ -267,6 +265,7 @@ def results_predicate(dataname: data.DataName, anomalous: bool):
             return False
         return True
     return filt
+
 
 @presentation(ex_nmse_snr)
 def pr_nmse_snr(results):
@@ -302,11 +301,10 @@ def pr_nmse_snr(results):
 
 # --- Fault size experiments -------------------------------------------
 
-def benchmark_fsize(results: BenchmarkResults, fsize, model):
-    sigest = (np.array(m["sigest"], dtype=np.float32)
-              for m in results["methods"].values())
-    pred_err = map(partial(sizeregr.pred_err_np, fsize, model), sigest)
-    return list(pred_err)
+def benchmark_fsize(results: list[MethodResult], fsize, model):
+    # signature estimate cast to 32-bit float array for pytorch compatibility
+    return list(map(partial(sizeregr.pred_err_np, fsize, model),
+                   (np.array(res.sigest, dtype=np.float32) for res in results)))
 
 
 @dataclass
@@ -351,11 +349,9 @@ def fse(seed: int, snr: float, fsize: int):
                                         signature_shift=-40,
                                         hyst_ed=0.8)
 
-    benchmark_results = benchmark(desc, irfs_params, seed=seed) 
-    
-    sigest = (np.array(m["sigest"], dtype=np.float32)
-              for m in benchmark_results["methods"].values())
-    return list(map(partial(sizeregr.pred_err_np, fsize, model), sigest))
+    vibdata = generate_vibration(desc, seed=seed)
+    benchmark_results = benchmark(vibdata, irfs_params)
+    return benchmark_fsize(benchmark_results, fsize, model)
 
 
 @experiment(OUTPUT_PATH, json=True)
