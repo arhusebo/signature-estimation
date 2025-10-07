@@ -48,20 +48,15 @@ class IRFSIteration:
 def irfs_iteration(params: IRFSParams,
                    signal: sig.Signal,
                    eot: npt.ArrayLike,
-                   max_shift_error: int = 0,
+                   certainty: npt.ArrayLike,
                    normthr: float | None = None) -> IRFSIteration:
     """Perform one iteration of IRFS"""
-    
-    freq, _ = evt.find_order(eot, params.fmin, params.fmax)
-    mu, kappa = evt.fit_vonmises(freq, eot)
-    z = evt.map_circle(freq, eot)
-    crt = scipy.stats.vonmises.pdf(z, kappa, loc=mu)
-    idx = np.argsort(crt)[::-1]
-    sigest = utl.estimate_signature(signal,
-                                    params.signature_length,
-                                    x=eot[idx],
-                                    weights=crt[idx],
-                                    max_error=max_shift_error,)
+
+    if not len(eot)==len(certainty):
+        raise ValueError("eot and certainty must be of same length")
+
+    sigest = utl.estimate_signature(signal, params.signature_length,
+                                    x=eot, weights=certainty,)
     det = MatchedFilterMaximumDetector(sigest)
     stat = det.statistic(signal)
     if normthr is None:
@@ -72,12 +67,16 @@ def irfs_iteration(params: IRFSParams,
 
     cmp = sig.Comparison.from_comparator(stat, thr)
     eot_new, mag = sig.matched_filter_location_estimates(cmp)
+    freq, _ = evt.find_order(eot_new, params.fmin, params.fmax)
+    mu, kappa = evt.fit_vonmises(freq, eot_new)
+    z = evt.map_circle(freq, eot_new)
+    crt_new = scipy.stats.vonmises.pdf(z, kappa, loc=mu)
 
     return IRFSIteration(
         sigest=sigest,
         eot=eot_new,
         magnitude=mag,
-        certainty=crt,
+        certainty=crt_new,
         freq=freq,
         mu=mu,
         kappa=kappa,
@@ -102,10 +101,10 @@ def irfs(params: IRFSParams,
 
     # adjust for shift
     eot0 += params.signature_shift*signal.dx
+    crt0 = np.ones_like(eot0)
 
     # initial iteration
-    iter = irfs_iteration(params, signal, eot0,
-                          max_shift_error=params.max_shift_error,)
+    iter = irfs_iteration(params, signal, eot0, crt0)
     yield iter
 
     normthr = iter.threshold/np.linalg.norm(iter.sigest)
@@ -115,7 +114,8 @@ def irfs(params: IRFSParams,
     while (i:=i+1):
         if len(iter.eot)==0:
             break
-        iter = irfs_iteration(params, signal, iter.eot, normthr=normthr)
+        iter = irfs_iteration(params, signal, iter.eot, iter.certainty,
+                              normthr=normthr)
         yield iter
 
 

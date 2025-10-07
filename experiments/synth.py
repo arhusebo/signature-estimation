@@ -13,6 +13,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 from faultevent.signal import Signal
+from faultevent.util import estimate_signature
 from faultevent.event import event_spectrum
 
 import algorithms
@@ -31,10 +32,6 @@ cfg = load_config()
 OUTPUT_PATH = "results/synth"
 MC_ITERATIONS = cfg.get("mc_iterations", 30)
 MAX_WORKERS = cfg.get("max_workers", None)
-
-
-def DEFAULT_ANOMALY_SIGNATURE(n):
-    return (n>=0)*np.sinc(n/2+1)
 
 
 def estimate_signat(signal: Signal, indices: Sequence[int],
@@ -94,6 +91,8 @@ def benchmark(vibdata: VibrationData,
     for i, irfs_result in enumerate(irfs):
         if i >= 10: break
 
+    sigest_irfs = estimate_signature(data=resid_ml, length=sigestlen, x=irfs_result.eot,
+                                     weights=irfs_result.certainty)
     # irfs_out = np.correlate(resid_ml.y, irfs_result["sigest"], mode="valid")
     # irfs_filt = Signal(irfs_out, resid_ml.x[:-len(irfs_result["sigest"])+1],
     #                     resid_ml.uniform_samples)
@@ -102,34 +101,34 @@ def benchmark(vibdata: VibrationData,
     medout = algorithms.med_filter(vib, medfiltsize, "impulse")
     medenv = abs(scipy.signal.hilbert(medout.y))
     medpeaks, _ = scipy.signal.find_peaks(medenv, distance=avg_event_period/2)
-    sigest_med = estimate_signat(vib, medpeaks, sigestlen, sigestshift)
+    sigest_med = estimate_signature(data=vib, length=sigestlen, indices=medpeaks+sigestshift)
     
     # estimate signature using SK and peak detection
     skout = algorithms.skfilt(vib)
     skenv = abs(skout.y)
     skpeaks, _ = scipy.signal.find_peaks(skenv, distance=avg_event_period/2)
-    sigest_sk = estimate_signat(vib, skpeaks, sigestlen, sigestshift)
+    sigest_sk = estimate_signature(data=vib, length=sigestlen, indices=skpeaks+sigestshift)
 
     # estimate signature using AR-MED and peak detection
     armedout = algorithms.med_filter(resid_ar, medfiltsize, "impulse")
     armedenv = abs(scipy.signal.hilbert(armedout.y))
     armedpeaks, _ = scipy.signal.find_peaks(armedenv, distance=avg_event_period/2)
-    sigest_armed = estimate_signat(vib, armedpeaks, sigestlen, sigestshift)
+    sigest_armed = estimate_signature(data=vib, length=sigestlen, indices=armedpeaks+sigestshift)
     
     # estimate signature using AR-SK and peak detection
     arskout = algorithms.skfilt(resid_ar)
     arskenv = abs(arskout.y)
     arskpeaks, _ = scipy.signal.find_peaks(arskenv, distance=avg_event_period/2)
-    sigest_arsk = estimate_signat(vib, arskpeaks, sigestlen, sigestshift)
+    sigest_arsk = estimate_signature(data=vib, length=sigestlen, indices=arskpeaks+sigestshift)
     
     # Compound method from
     # https://www.papers.phmsociety.org/index.php/phmconf/article/download/3522/phmc_23_3522
     cmout = algorithms.skfilt(armedout)
     cmenv = abs(cmout.y)
     cmpeaks, _ = scipy.signal.find_peaks(cmenv, distance=avg_event_period/2)
-    sigest_cm = estimate_signat(vib, cmpeaks, sigestlen, sigestshift)
+    sigest_cm = estimate_signature(data=vib, length=sigestlen, indices=cmpeaks+sigestshift)
 
-    results = [MethodResult("irfs", irfs_result.sigest, irfs_result.eot),
+    results = [MethodResult("irfs", sigest_irfs, irfs_result.eot),
                MethodResult("med", sigest_med, medout.x[medpeaks]),
                MethodResult("sk", sigest_sk, skout.x[skpeaks]),
                MethodResult("armed", sigest_armed, armedout.x[armedpeaks]),
