@@ -42,13 +42,14 @@ def avg_fault_period(desc: VibrationDescriptor, fault_index: int = 0) -> float:
             /desc["shaft_frequency"])/desc["faults"][fault_index]["ord"]
 
 
+@np.vectorize
 def signt_stpres(f, tau, t):
     return (np.exp(-t/(3*tau))*(-np.cos(2*np.pi*(f/6)*t))
-            +np.exp(-t/(5*tau)))*(t>=0.0)
+            +np.exp(-t/(5*tau))) if t >= 0.0 else 0.0
 
-
+@np.vectorize
 def signt_impres(f, tau, t):
-    return np.exp(-t/tau)*np.sin(2*np.pi*f*t)*(t>=0.0)
+    return np.exp(-t/tau)*np.sin(2*np.pi*f*t) if t>=0.0 else 0.0
 
 
 def signt_res(f, tau, d, t, fs=1.0):

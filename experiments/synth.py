@@ -91,7 +91,8 @@ def benchmark(vibdata: VibrationData,
     for i, irfs_result in enumerate(irfs):
         if i >= 10: break
 
-    sigest_irfs = estimate_signature(data=resid_ml, length=sigestlen, x=irfs_result.eot,
+    sigest_irfs = estimate_signature(data=resid_ml, length=sigestlen,
+                                     indices=resid_ar.idx_closest(irfs_result.eot)+sigestshift,
                                      weights=irfs_result.certainty)
     # irfs_out = np.correlate(resid_ml.y, irfs_result["sigest"], mode="valid")
     # irfs_filt = Signal(irfs_out, resid_ml.x[:-len(irfs_result["sigest"])+1],
@@ -300,12 +301,6 @@ def pr_nmse_snr(results):
 
 # --- Fault size experiments -------------------------------------------
 
-def benchmark_fsize(results: list[MethodResult], fsize, model):
-    # signature estimate cast to 32-bit float array for pytorch compatibility
-    return list(map(partial(sizeregr.pred_err_np, fsize, model),
-                   (np.array(res.sigest, dtype=np.float32) for res in results)))
-
-
 @dataclass
 class FseExperimentParams:
     model: sizeregr.Model
@@ -322,8 +317,14 @@ def fse(seed: int, snr: float, fsize: int):
     on module-level."""
     ordf = 5.0
     fs = 51200
-    signature = DEFAULT_FAULT_SIGNATURE(np.arange(800), fsize)
-    model = sizeregr.Model.load(sizeregr.model_filepath())
+    
+    sig_f = 6.5e3
+    sig_tau = 0.001
+    sig_fs = 25.e3
+    sig_t = np.arange(800)
+    stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t/sig_fs)
+    impres = data.synth.signt_impres(sig_f, sig_tau, sig_t/sig_fs)
+    signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
 
     desc: VibrationDescriptor = {
         "length": 100000,
@@ -348,9 +349,19 @@ def fse(seed: int, snr: float, fsize: int):
                                         signature_shift=-40,
                                         hyst_ed=0.8)
 
+    def estimate_fsize(sigest):
+        idx0 = np.argmax(np.correlate(sigest, stpres, mode="full"))
+        idx1 = np.argmax(np.correlate(sigest, impres, mode="full"))
+        return idx0-idx1
+
+
     vibdata = generate_vibration(desc, seed=seed)
     benchmark_results = benchmark(vibdata, irfs_params)
-    return benchmark_fsize(benchmark_results, fsize, model)
+
+    fse_err = map(lambda sigest: abs(fsize-estimate_fsize(sigest)),
+                  (res.sigest for res in benchmark_results))
+    
+    return list(fse_err)
 
 
 @experiment(OUTPUT_PATH, json=True)
@@ -359,8 +370,9 @@ def ex_fsize_snr(status: ExperimentStatus):
     exp_params = []
 
     # experiment variables
-    fsize = lambda i: 5+int(25*i/MC_ITERATIONS)
-    snr_values = np.logspace(-2, 0, 10)
+    #fsize = lambda i: 5+int(25*i/MC_ITERATIONS)
+    fsize = lambda i: 20
+    snr_values = np.logspace(-2, 1, 10)
 
     status.max_progress = len(snr_values)
 
@@ -391,10 +403,10 @@ def pr_fsize_snr(results):
     for j, err_ in enumerate(errarr):
         ax.plot(snr_db, err_, marker=markers[j], c=cmap(cmap_idx[j]))
     ax.grid()
-    ax.set_xticks(range(-20, 1, 5))
+    #ax.set_xticks(range(-20, 1, 5))
         
     ax.set_xlabel("SNR (dB)")
-    ax.set_ylabel("Fault size (samples)")
+    ax.set_ylabel("Fault size error (samples)")
     ax.legend(legend, ncol=len(legend)//2, loc="upper center",
               bbox_to_anchor=(0.5, 1.3))
 
