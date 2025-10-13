@@ -114,22 +114,6 @@ def augment_sequence(signal, snr: float):
 
     return signal + tilde
 
- 
-def itertools_batched(iterable, n, *, strict=False):
-    '''"Backport" for `itertools.batched` (Python 3.12)
-    
-    Copied from "roughly equivalent" example at
-    https://docs.python.org/3/library/itertools.html#itertools.batched
-    '''
-    # batched('ABCDEFG', 2) → AB CD EF G
-    if n < 1:
-        raise ValueError('n must be at least one')
-    iterator = iter(iterable)
-    while batch := tuple(itertools.islice(iterator, n)):
-        if strict and len(batch) != n:
-            raise ValueError('batched(): incomplete batch')
-        yield batch
-
 
 def batchify(x, siglen: int):
     # The number of batches is determined by the specified signal
@@ -137,7 +121,7 @@ def batchify(x, siglen: int):
     # depending on the length of the loaded signal.
     nbatches = len(x)//siglen
     # (N, L)
-    xb = torch.tensor(list(itertools_batched(x[:nbatches*siglen], siglen)),
+    xb = torch.tensor(list(itertools.batched(x[:nbatches*siglen], siglen)),
                         dtype=torch.float32)
     # (N, 1, L)
     xb = xb[:,torch.newaxis,:]
