@@ -1,4 +1,6 @@
 from typing import Sequence, TypedDict
+from collections.abc import Iterator
+from functools import partial
 import itertools
 import pathlib
 import numpy as np
@@ -54,10 +56,6 @@ class Model(torch.nn.Module):
 
     def forward(self, x):
         # shape(x) = (N, 1, L)
-        mean = torch.mean(x, dim=-1, keepdim=True)
-        x -= mean
-        std = torch.std(x, dim=-1, keepdim=True)
-        x /= 3*std
 
         padlog = torch.zeros((len(self.downsample)), dtype=int)
         for i, layer in enumerate(self.downsample):
@@ -73,8 +71,7 @@ class Model(torch.nn.Module):
             x = torch.nn.functional.pad(x, (0, padlog[i]))
             if i<len(self.upsample)-1:
                 x = self.activation(x)
-        x *= 3*std
-        x += mean
+
         return x
     
     @classmethod
@@ -115,25 +112,50 @@ def augment_sequence(signal, snr: float):
     return signal + tilde
 
 
-def batchify(x, siglen: int):
-    # The number of batches is determined by the specified signal
-    # length. The implications are that the batch size may vary 
-    # depending on the length of the loaded signal.
-    nbatches = len(x)//siglen
-    # (N, L)
-    xb = torch.tensor(list(itertools.batched(x[:nbatches*siglen], siglen)),
-                        dtype=torch.float32)
-    # (N, 1, L)
-    xb = xb[:,torch.newaxis,:]
-
-    return xb, nbatches
+type PrepDataset = Iterator[np.NDArray[np.float32]]
+type Dataset = np.NDArray[np.float32]
 
 
-def train(dataloader: DataLoader, signal_idx: Sequence, epochs: int,
-          siglen: int, savepath: str, overwrite = False):
+def prepare_dataset(dataloader: DataLoader, signal_ids: Sequence, siglen: int,
+                    ) -> PrepDataset:
+    """Prepare a dataset (in memory) from the dataloader using signals
+    identified by the provided signal IDs. Returns an iterator of signals.
+    """
+    getsig = lambda idx: dataloader[idx].vib.y
+    s = map(getsig, signal_ids)
+
+    def split(s):
+        remain = len(s)%siglen
+        nsig = len(s)//siglen
+        return np.split(s[:-remain], nsig)
+
+    s = map(split, s)
+
+    return np.vstack(list(s), dtype=np.float32)
+
+
+def gen_batches(dataset: Dataset, batch_size: int,
+                standardize = True, shuffle = True) -> Dataset:
+    """Generate batches for one epoch of the dataset. This function loads
+    the entire dataset into memory."""
+    if standardize:
+        dataset -= np.mean(dataset)
+        dataset /= np.std(dataset)
+    
+    rng = np.random.default_rng()
+    if shuffle:
+        rng.shuffle(dataset, axis=0)
+
+    yield from itertools.batched(dataset, batch_size)
+
+
+def train(dataset_train: PrepDataset, 
+          batch_size: int, epochs: int, savepath: str,
+          dataset_validate: PrepDataset = None,
+          overwrite = False):
     
     model = Model()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     
     epoch = 0
     loss_history = []
@@ -152,22 +174,25 @@ def train(dataloader: DataLoader, signal_idx: Sequence, epochs: int,
     model.train()
     range_epochs = range(epoch, epoch+epochs)
     epoch_loss = []
+
     for epoch in range_epochs:
-        # TODO: Split signals and batching
-        for i, idx_ in enumerate(signal_idx):
-            vib = dataloader[idx_].vib
+        train_batches = gen_batches(dataset_train, batch_size, standardize=True, shuffle=True)
+        for i, batch in enumerate(train_batches):
             
-            x = vib.y
-            ax = augment_sequence(x, 10.0)
+            #aug_batch = map(partial(augment_sequence, 10.0), batch)
+            aug_batch = np.apply_along_axis(augment_sequence, -1, batch, snr=10.0)
+            
+            # (N, 1, L)
+            desired_shape = (batch_size, 1, -1)
+            batch = torch.from_numpy(np.reshape(batch, desired_shape))
+            aug_batch = torch.from_numpy(np.reshape(aug_batch, desired_shape))
 
             optimizer.zero_grad()
 
             # model specifics
-            xb, _ = batchify(x, siglen)
-            axb, _ = batchify(ax, siglen)
-            yb = model(axb)
+            pred_batch = model(aug_batch)
 
-            loss = loss_fn(yb, xb)
+            loss = loss_fn(pred_batch, batch)
             loss.backward()
 
             optimizer.step()
@@ -192,7 +217,7 @@ class MLSignalModel(SignalModel):
 
     def process(self, signal: Signal) -> Signal:
         with torch.no_grad():
-            bx, _ = batchify(signal.y, len(signal))
+            bx = torch.tensor(signal.y, dtype=torch.float32).reshape((1, 1, -1))
             by = self.model(bx)
             y = torch.flatten(by).numpy()
             out = Signal(y, signal.x, uniform_samples=signal.uniform_samples)
@@ -234,6 +259,8 @@ if __name__ == "__main__":
                         help="overwrite existing model")
     parser.add_argument("-l", "--len", type=int, default=10000,
                         help="signal training length")
+    parser.add_argument("-b", "--bsize", type=int, default=10,
+                        help="batch size")
     parser.add_argument("-e", "--epochs", type=int, default=20,
                         help="number of epochs before termination")
     args = parser.parse_args()
@@ -246,23 +273,26 @@ if __name__ == "__main__":
     match type(dl):
         
         case data.UiADataLoader:
-            exclude = ["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
+            exclude_idx = ["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
             signal_idx = filter(
                     lambda x: "1000rpm" in x
-                    and not pathlib.Path(x) in map(pathlib.Path, exclude),
+                    and not pathlib.Path(x) in map(pathlib.Path, exclude_idx),
                 glob.iglob("y2016-m09-d20/*.h5", root_dir=data_path))
         
         case data.UNSWDataLoader:
-            exclude = ["Test 1/6Hz/vib_000002663_06.mat"]
+            exclude_idx = ["Test 1/6Hz/vib_000002663_06.mat"]
             signal_idx = filter(
-                    lambda x: not pathlib.Path(x) in map(pathlib.Path, exclude),
+                    lambda x: not pathlib.Path(x) in map(pathlib.Path, exclude_idx),
                 itertools.islice(
                     glob.iglob("Test 1/6Hz/*.mat", root_dir=data_path), 10))
         
         case data.CWRUDataLoader:
+            exclude_idx = ["099"]
             signal_idx = ["097", "098", "100"] # "099" excluded
         case _:
             raise ValueError("dataloader not recognized")
     
     savepath = model_filepath(args.name)
-    train(dl, list(signal_idx), args.epochs, args.len, savepath, overwrite=args.overwrite)
+    dataset = prepare_dataset(dataloader=dl, signal_ids=signal_idx,
+                              siglen=args.len)
+    train(dataset, args.bsize, args.epochs, savepath, overwrite=args.overwrite)
