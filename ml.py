@@ -117,7 +117,7 @@ type Dataset = np.NDArray[np.float32]
 
 
 def prepare_dataset(dataloader: DataLoader, signal_ids: Sequence, siglen: int,
-                    nval: int = 0) -> PrepDataset:
+                    nval: int = 0, standardize = False) -> PrepDataset:
     """Prepare a dataset (in memory) from the dataloader using signals
     identified by the provided signal IDs. Returns an iterator of signals.
     """
@@ -131,6 +131,10 @@ def prepare_dataset(dataloader: DataLoader, signal_ids: Sequence, siglen: int,
 
     s = map(split, s)
     s = list(s) # to memory here
+    
+    if standardize:
+        s -= np.mean(s)
+        s /= np.std(s)
 
     if nval:
         every_nth = len(s)//nval
@@ -143,13 +147,8 @@ def prepare_dataset(dataloader: DataLoader, signal_ids: Sequence, siglen: int,
     return np.vstack(s, dtype=np.float32)
 
 
-def gen_batches(dataset: Dataset, batch_size: int,
-                standardize = True, shuffle = True) -> Dataset:
-    """Generate batches for one epoch of the dataset. This function loads
-    the entire dataset into memory."""
-    if standardize:
-        dataset -= np.mean(dataset)
-        dataset /= np.std(dataset)
+def gen_batches(dataset: Dataset, batch_size: int, shuffle = True) -> Dataset:
+    """Generate batches for one epoch of the dataset."""
     
     rng = np.random.default_rng()
     if shuffle:
@@ -186,8 +185,7 @@ def train(dataset_train: PrepDataset,
     range_epochs = range(epoch, epoch+epochs)
 
     for epoch in range_epochs:
-        train_batches = gen_batches(dataset_train, batch_size,
-                                    standardize=True, shuffle=True,)
+        train_batches = gen_batches(dataset_train, batch_size, shuffle=True,)
         # epoch training pass
         model.train()
         for i, batch in enumerate(train_batches):
@@ -213,8 +211,7 @@ def train(dataset_train: PrepDataset,
 
         # epoch validation pass
         with torch.no_grad():
-            test_batches = gen_batches(dataset_val, len(dataset_val),
-                                        standardize=True, shuffle=True,)
+            test_batches = gen_batches(dataset_val, len(dataset_val), shuffle=True,)
             batch = next(test_batches)
             model.eval()
             aug_batch = np.apply_along_axis(augment_sequence, -1, batch, snr=10.0)
@@ -325,5 +322,5 @@ if __name__ == "__main__":
     
     savepath = model_filepath(args.name)
     dataset = prepare_dataset(dataloader=dl, signal_ids=signal_idx,
-                              siglen=args.len, nval=5)
+                              siglen=args.len, nval=5, standardize=True)
     train(*dataset, args.bsize, args.epochs, savepath, overwrite=args.overwrite)
