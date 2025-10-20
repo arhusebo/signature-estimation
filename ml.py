@@ -117,7 +117,7 @@ type Dataset = np.NDArray[np.float32]
 
 
 def prepare_dataset(dataloader: DataLoader, signal_ids: Sequence, siglen: int,
-                    ) -> PrepDataset:
+                    nval: int = 0) -> PrepDataset:
     """Prepare a dataset (in memory) from the dataloader using signals
     identified by the provided signal IDs. Returns an iterator of signals.
     """
@@ -130,8 +130,17 @@ def prepare_dataset(dataloader: DataLoader, signal_ids: Sequence, siglen: int,
         return np.split(s[:-remain], nsig)
 
     s = map(split, s)
+    s = list(s) # to memory here
 
-    return np.vstack(list(s), dtype=np.float32)
+    if nval:
+        every_nth = len(s)//nval
+        sval = s[::every_nth]
+        s = itertools.chain(*(s[i+1:i+every_nth] for i in range(0, len(s), every_nth)))
+        s = list(s)
+
+        return np.vstack(s, dtype=np.float32), np.vstack(sval, dtype=np.float32)
+    
+    return np.vstack(s, dtype=np.float32)
 
 
 def gen_batches(dataset: Dataset, batch_size: int,
@@ -150,6 +159,7 @@ def gen_batches(dataset: Dataset, batch_size: int,
 
 
 def train(dataset_train: PrepDataset, 
+          dataset_val: PrepDataset,
           batch_size: int, epochs: int, savepath: str,
           dataset_validate: PrepDataset = None,
           overwrite = False):
@@ -159,6 +169,7 @@ def train(dataset_train: PrepDataset,
     
     epoch = 0
     loss_history = []
+    loss_history_val = []
     if not overwrite:
         try:
             state = torch.load(savepath)
@@ -166,17 +177,19 @@ def train(dataset_train: PrepDataset,
             optimizer.load_state_dict(state["optimizer_state_dict"])
             epoch = state["epoch"]+1
             loss_history = state["loss_history"]
+            loss_history_val = state["loss_history_val"]
         except Exception:
                 print("could not load model state")
 
     loss_fn = torch.nn.MSELoss()
 
-    model.train()
     range_epochs = range(epoch, epoch+epochs)
-    epoch_loss = []
 
     for epoch in range_epochs:
-        train_batches = gen_batches(dataset_train, batch_size, standardize=True, shuffle=True)
+        train_batches = gen_batches(dataset_train, batch_size,
+                                    standardize=True, shuffle=True,)
+        # epoch training pass
+        model.train()
         for i, batch in enumerate(train_batches):
             
             #aug_batch = map(partial(augment_sequence, 10.0), batch)
@@ -196,8 +209,22 @@ def train(dataset_train: PrepDataset,
             loss.backward()
 
             optimizer.step()
-            epoch_loss.append(loss.item())
             print(f"e{epoch},s{i}\t{loss.item()}")
+
+        # epoch validation pass
+        with torch.no_grad():
+            test_batches = gen_batches(dataset_val, len(dataset_val),
+                                        standardize=True, shuffle=True,)
+            batch = next(test_batches)
+            model.eval()
+            aug_batch = np.apply_along_axis(augment_sequence, -1, batch, snr=10.0)
+            desired_shape = (batch_size, 1, -1)
+            batch = torch.from_numpy(np.reshape(batch, desired_shape))
+            aug_batch = torch.from_numpy(np.reshape(aug_batch, desired_shape))
+            pred_batch = model(aug_batch)
+            loss_val = loss_fn(pred_batch, batch)
+            loss_history_val.append(loss_val.item())
+
         
         loss_history.append(loss.item())
         # save model after every epoch
@@ -207,6 +234,7 @@ def train(dataset_train: PrepDataset,
             "optimizer_state_dict": optimizer.state_dict(),
             "loss": loss,
             "loss_history": loss_history,
+            "loss_history_val": loss_history_val,
         }, savepath)
     
 
@@ -235,9 +263,12 @@ def plot_history(name: data.DataName):
     state = torch.load(savepath)
     epoch = state["epoch"]+1
     loss_history = state["loss_history"]
+    loss_history_val = state["loss_history_val"]
     plt.figure()
-    plt.plot(range(epoch), loss_history)
+    plt.plot(range(epoch), loss_history, label="train")
+    plt.plot(range(epoch), loss_history_val, label="validate")
     plt.title(f"training history for\n\"{name}\" dataset")
+    plt.legend()
     plt.xlabel("epoch")
     plt.ylabel("loss")
     plt.show()
@@ -294,5 +325,5 @@ if __name__ == "__main__":
     
     savepath = model_filepath(args.name)
     dataset = prepare_dataset(dataloader=dl, signal_ids=signal_idx,
-                              siglen=args.len)
-    train(dataset, args.bsize, args.epochs, savepath, overwrite=args.overwrite)
+                              siglen=args.len, nval=5)
+    train(*dataset, args.bsize, args.epochs, savepath, overwrite=args.overwrite)
