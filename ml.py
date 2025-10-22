@@ -130,19 +130,20 @@ def prepare_dataset(dataloader: DataLoader, signal_ids: Sequence, siglen: int,
         return np.split(s[:-remain], nsig)
 
     s = map(split, s)
-    s = list(s) # to memory here
-    
+    s = itertools.chain.from_iterable(s)
+    s = np.array(list(s)) # to memory here
+
     if standardize:
         s -= np.mean(s)
         s /= np.std(s)
 
     if nval:
-        every_nth = len(s)//nval
-        sval = s[::every_nth]
-        s = itertools.chain(*(s[i+1:i+every_nth] for i in range(0, len(s), every_nth)))
-        s = list(s)
+        idx_val = np.linspace(0, len(s)-1, nval, dtype=int)
+        sval = s[idx_val]
+        idx_train = np.setdiff1d(np.arange(len(s)), idx_val)
+        strain = s[idx_train]
 
-        return np.vstack(s, dtype=np.float32), np.vstack(sval, dtype=np.float32)
+        return np.vstack(strain, dtype=np.float32), np.vstack(sval, dtype=np.float32)
     
     return np.vstack(s, dtype=np.float32)
 
@@ -322,5 +323,5 @@ if __name__ == "__main__":
     
     savepath = model_filepath(args.name)
     dataset = prepare_dataset(dataloader=dl, signal_ids=signal_idx,
-                              siglen=args.len, nval=5, standardize=True)
+                              siglen=args.len, nval=5, standardize=False)
     train(*dataset, args.bsize, args.epochs, savepath, overwrite=args.overwrite)
