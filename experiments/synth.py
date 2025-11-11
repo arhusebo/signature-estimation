@@ -91,8 +91,8 @@ def benchmark(vibdata: VibrationData,
     for i, irfs_result in enumerate(irfs):
         if i >= 10: break
 
-    sigest_irfs = estimate_signature(data=resid_ml, length=sigestlen,
-                                     indices=resid_ar.idx_closest(irfs_result.eot)+sigestshift,
+    sigest_irfs = estimate_signature(data=vib, length=sigestlen,
+                                     indices=vib.idx_closest(irfs_result.eot)+sigestshift,
                                      weights=irfs_result.certainty)
     # irfs_out = np.correlate(resid_ml.y, irfs_result["sigest"], mode="valid")
     # irfs_filt = Signal(irfs_out, resid_ml.x[:-len(irfs_result["sigest"])+1],
@@ -221,6 +221,11 @@ def snr_experiment(seed: int, score_func: Callable[[MethodResult], Any],
     return score_func(benchmark_results, *score_args)
 
 
+def wrap_snr_experiment(kwargs):
+    return snr_experiment(**kwargs)
+
+
+
 def benchmark_nmse(results: list[MethodResult], signature):
     return list(map(partial(estimate_nmse, signature, 1000),
                (result.sigest for result in results)))
@@ -231,37 +236,42 @@ def ex_nmse_snr(status: ExperimentStatus):
     """Monte-carlo simulation of signature NMSE for varying SNR"""
 
     iterations = 1
-
-    snr = np.logspace(-2, 0, 5).tolist()
-    #dataname = [data.DataName.UIA, data.DataName.UNSW, data.DataName.CWRU]
-    dataname = [data.DataName.UNSW]
-    anomalous = [0, 1000]
-    signature = [DEFAULT_FAULT_SIGNATURE(np.arange(800)).tolist()]
-
-    args_list = list(itertools.product(snr, dataname, anomalous, signature))
-    score_args = (signature[0],)
     
-    status.max_progress = len(args_list)
-    rmse = []
-    for i, args in enumerate(args_list):
-        args_ = [(seed, benchmark_nmse, *args, score_args) for seed in range(iterations)]
+    signature = DEFAULT_FAULT_SIGNATURE(np.arange(800)).tolist()
+
+    conf = {
+        "snr": np.logspace(-2, 0, 5).tolist(),
+        #"dataname" = [data.DataName.UIA, data.DataName.UNSW, data.DataName.CWRU],
+        "dataname": [data.DataName.UIA],
+        "anomalous": [0, 1000],
+        "signature": [signature],
+        "score_args": [(signature,),],
+    }
+
+    conf_list = list(dict(zip(conf.keys(), x)) for x in itertools.product(*conf.values()))
+
+    status.max_progress = len(conf_list)
+    results = []
+    for i, conf in enumerate(conf_list):
+        kwargs = ({**conf, "score_func": benchmark_nmse, "seed": i} for i in range(iterations))
         with Pool(MAX_WORKERS) as p:
-            rmse_ = p.starmap(snr_experiment, args_)
-            rmse.append(np.nanmean(rmse_, axis=0).tolist())
+            rmse_ = p.map(wrap_snr_experiment, kwargs)
+            results.append({
+                "rmse": np.nanmean(rmse_, axis=0).tolist(),
+                "conf": conf
+            })
         status.progress = i+1
         
-    return args_list, rmse
+    return results
 
 
 # Present NMSE vs SNR results
 
 def results_predicate(dataname: data.DataName, anomalous: bool):
     def filt(result):
-        args, _ = result
-        _, arg_dataname, arg_anomalous, _ = args
-        if not arg_dataname == dataname:
+        if not result["conf"]["dataname"] == dataname:
             return False
-        if bool(arg_anomalous) != anomalous:
+        if bool(result["conf"]["anomalous"]) != anomalous:
             return False
         return True
     return filt
@@ -275,22 +285,24 @@ def pr_nmse_snr(results):
     markers = ["o", "^", "d", ".", "*", "+"]
     cmap = plt.get_cmap("tab10")
     cmap_idx = [0, 1, 2, 1, 2, 3]
-    for dataname in ("uia", "unsw", "cwru"):
+    for dataname in ("uia",):#, "unsw", "cwru"):
         _, ax = plt.subplots(2, 1, sharex=True, figsize=(3.5, 2.0))
         plt.title(dataname.upper())
         for i, anomalous in enumerate((False, True)):
-            filtres = list(filter(results_predicate(dataname, anomalous), zip(*results)))
-            snr = [x[0][0] for x in filtres]
-            rmse = np.array([x[-1] for x in filtres])
+            filtres = list(filter(results_predicate(dataname, anomalous), results))
+            snr = [x["conf"]["snr"] for x in filtres]
+            rmse = np.array([x["rmse"] for x in filtres])
             snr_db = 10*np.log10(snr)
             for j in range(rmse.shape[-1]):
-                ax[i].plot(snr_db, rmse[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
+                ax[i].plot(snr, rmse[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
             ax[i].set_ylabel(f"NMSE\n{ylabels[i]}")
             ax[i].grid()
             ax[i].set_yticks([0.0, 0.5, 1.0])
-            ax[i].set_xticks(range(-20, 1, 5))
+            ax[i].set_xscale("log")
+            #ax[i].set_xticks(range(-20, 1, 5))
             
-        ax[-1].set_xlabel("SNR (dB)")
+        #ax[-1].set_xlabel("SNR (dB)")
+        ax[-1].set_xlabel("SNR")
         ax[0].legend(legend, ncol=len(legend)//2, loc="upper center",
                     bbox_to_anchor=(0.5, 1.3))
     
@@ -325,6 +337,8 @@ def fse(seed: int, snr: float, fsize: int):
     stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t/sig_fs)
     impres = data.synth.signt_impres(sig_f, sig_tau, sig_t/sig_fs)
     signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
+    
+    signature_anomalous = DEFAULT_ANOMALY_SIGNATURE(np.arange(800)).tolist()
 
     desc: VibrationDescriptor = {
         "length": 100000,
@@ -341,7 +355,11 @@ def fse(seed: int, snr: float, fsize: int):
                 "signature": signature,
                 "std": 0.01,
             }
-        ]
+        ],
+        "anomaly": {
+            "amount": 0,
+            "signature": signature_anomalous,
+        }
     }
     
     irfs_params = algorithms.IRFSParams(fmin=ordf-0.5, fmax=ordf+0.5,
@@ -352,7 +370,7 @@ def fse(seed: int, snr: float, fsize: int):
     def estimate_fsize(sigest):
         idx0 = np.argmax(np.correlate(sigest, stpres, mode="full"))
         idx1 = np.argmax(np.correlate(sigest, impres, mode="full"))
-        return idx0-idx1
+        return idx1-idx0
 
 
     vibdata = generate_vibration(desc, seed=seed)
@@ -372,13 +390,13 @@ def ex_fsize_snr(status: ExperimentStatus):
     # experiment variables
     #fsize = lambda i: 5+int(25*i/MC_ITERATIONS)
     fsize = lambda i: 20
-    snr_values = np.logspace(-2, 1, 10)
+    snr_values = np.logspace(-3, 0, 10)
 
     status.max_progress = len(snr_values)
 
     err = []
     for progress, snr in enumerate(snr_values):
-        args_ = [(i, fsize(i), snr) for i in range(MC_ITERATIONS)]
+        args_ = [(i, snr, fsize(i)) for i in range(MC_ITERATIONS)]
         with Pool(MAX_WORKERS) as p:
             err_ = p.starmap(fse, args_)
             err.append(np.nanmean(err_, axis=0).tolist())
@@ -398,14 +416,15 @@ def pr_fsize_snr(results):
     _, ax = plt.subplots(1, 1, sharex=True, figsize=(3.5, 2.0))
     
     snr, err = results
-    snr_db = 10*np.log10(snr)
+    #snr_db = 10*np.log10(snr)
     errarr = np.array(err).T
     for j, err_ in enumerate(errarr):
-        ax.plot(snr_db, err_, marker=markers[j], c=cmap(cmap_idx[j]))
+        ax.plot(snr, err_, marker=markers[j], c=cmap(cmap_idx[j]))
     ax.grid()
     #ax.set_xticks(range(-20, 1, 5))
         
-    ax.set_xlabel("SNR (dB)")
+    ax.set_xlabel("SNR")
+    ax.set_xscale("log")
     ax.set_ylabel("Fault size error (samples)")
     ax.legend(legend, ncol=len(legend)//2, loc="upper center",
               bbox_to_anchor=(0.5, 1.3))

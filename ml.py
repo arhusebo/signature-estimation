@@ -27,9 +27,9 @@ class Model(torch.nn.Module):
     def __init__(self):
         super().__init__()
         depth = 5
-        hidden_channels = 10
-        kernel_size = 3
-        stride = 2
+        hidden_channels = 5
+        kernel_size = 5
+        stride = 1
         dilation = 1
         self.kernel_size = kernel_size
         self.stride = stride
@@ -41,6 +41,9 @@ class Model(torch.nn.Module):
                             stride=stride, dilation=dilation)
             for _ in range(depth)
         ]
+
+        # len_out = floor[ (len_in - 1)/stride + 1 ]
+
         self.upsample = [
             torch.nn.ConvTranspose1d(hidden_channels, hidden_channels,
                                      kernel_size, stride=stride,
@@ -57,18 +60,19 @@ class Model(torch.nn.Module):
     def forward(self, x):
         # shape(x) = (N, 1, L)
 
-        padlog = torch.zeros((len(self.downsample)), dtype=int)
+        lenlog = torch.zeros((len(self.downsample)), dtype=int)
         for i, layer in enumerate(self.downsample):
             lin = x.shape[-1]
             x = layer(x)
             lout = x.shape[-1]
-            padlog[i] = lin//self.stride-lout
+            lenlog[i] = lin
             x = self.activation(x)
         
-        padlog = torch.flip(padlog, (0,))
+        lenlog = torch.flip(lenlog, (0,))
         for i, layer in enumerate(self.upsample):
             x = layer(x)
-            x = torch.nn.functional.pad(x, (0, padlog[i]))
+            lendiff = lenlog[i]-x.shape[-1]
+            x = torch.nn.functional.pad(x, (0, lendiff))
             if i<len(self.upsample)-1:
                 x = self.activation(x)
 
@@ -82,7 +86,7 @@ class Model(torch.nn.Module):
         return model
 
 
-def augment_sequence(signal, snr: float):
+def sequence_augmentation(signal, snr: float):
     """We want to make the model agnostic to
         1. any specific fault frequency, and
         2. any specific signature waveform.
@@ -109,7 +113,7 @@ def augment_sequence(signal, snr: float):
         tilde[idx0:idx1] = signature
         idx = idx1
 
-    return signal + tilde
+    return tilde
 
 
 type PrepDataset = Iterator[np.NDArray[np.float32]]
@@ -192,7 +196,7 @@ def train(dataset_train: PrepDataset,
         for i, batch in enumerate(train_batches):
             
             #aug_batch = map(partial(augment_sequence, 10.0), batch)
-            aug_batch = np.apply_along_axis(augment_sequence, -1, batch, snr=10.0)
+            aug_batch = np.apply_along_axis(sequence_augmentation, -1, batch, snr=10.0)
             
             # (N, 1, L)
             desired_shape = (batch_size, 1, -1)
@@ -202,7 +206,7 @@ def train(dataset_train: PrepDataset,
             optimizer.zero_grad()
 
             # model specifics
-            pred_batch = model(aug_batch)
+            pred_batch = model(batch)
 
             loss = loss_fn(pred_batch, batch)
             loss.backward()
@@ -215,11 +219,11 @@ def train(dataset_train: PrepDataset,
             test_batches = gen_batches(dataset_val, len(dataset_val), shuffle=True,)
             batch = next(test_batches)
             model.eval()
-            aug_batch = np.apply_along_axis(augment_sequence, -1, batch, snr=10.0)
+            #aug_batch = np.apply_along_axis(sequence_augmentation, -1, batch, snr=10.0)
             desired_shape = (batch_size, 1, -1)
             batch = torch.from_numpy(np.reshape(batch, desired_shape))
-            aug_batch = torch.from_numpy(np.reshape(aug_batch, desired_shape))
-            pred_batch = model(aug_batch)
+            #aug_batch = torch.from_numpy(np.reshape(aug_batch, desired_shape))
+            pred_batch = model(batch)
             loss_val = loss_fn(pred_batch, batch)
             loss_history_val.append(loss_val.item())
 

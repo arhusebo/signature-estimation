@@ -58,7 +58,7 @@ def signt_res(f, tau, d, t, fs=1.0):
 
 
 def DEFAULT_ANOMALY_SIGNATURE(n):
-    return signt_res(13.e3, 0.001, 30, n, fs=25.e3)
+    return signt_res(8.e3, 0.001, 30, n, fs=25.e3)
 
 
 def DEFAULT_FAULT_SIGNATURE(n, d=30):

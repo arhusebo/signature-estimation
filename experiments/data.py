@@ -7,6 +7,7 @@ from typing import TypedDict, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from collections import deque
 from dataclasses import dataclass
+import itertools
 
 import faultevent.signal as sig
 import faultevent.event as evt
@@ -114,11 +115,15 @@ def benchmark_experiment(dataname: data.DataName, signal_id: str,
     for i, irfs_result in enumerate(irfs):
         if i >= 10: break
 
+    irfs_sigest = utl.estimate_signature(signal, params.siglen,
+                                         x=irfs_result.eot,
+                                         weights=irfs_result.certainty,)
+
     # TODO: See if we can use the EOSPs output by `algorithms.irfs` directly
     # in `detect_and_sort` instead of what we do in the following lines
-    irfs_out = np.correlate(resid_ar.y, irfs_result.sigest, mode="valid")
-    irfs_filt = sig.Signal(irfs_out, resid_ar.x[:-len(irfs_result.sigest)+1],
-                        resid_ar.uniform_samples)
+    irfs_out = np.correlate(resid_ml.y, irfs_result.sigest, mode="valid")
+    irfs_filt = sig.Signal(irfs_out, resid_ml.x[:-len(irfs_result.sigest)+1],
+                           resid_ml.uniform_samples)
     def irfs_weight(spos):
         z = evt.map_circle(irfs_result.freq, spos)
         u = scipy.stats.vonmises.pdf(z, irfs_result.kappa, loc=irfs_result.mu)
@@ -154,7 +159,7 @@ def benchmark_experiment(dataname: data.DataName, signal_id: str,
         "ordc": params.ordc,
         "events_max": events_max,
         "irfs": {
-                "sigest": irfs_result.sigest,
+                "sigest": irfs_sigest,
                 "certainty": irfs_result.certainty,
                 "eosp": irfs_result.eot,
         },
@@ -323,6 +328,7 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
         results_to_show = np.take(list_benchmarks, include_idx)
     else:
         results_to_show = list_benchmarks
+        include_idx = list(range(len(results_to_show)))
     
     if n:
         n = min(len(results_to_show), n)
@@ -335,7 +341,7 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
     fig, ax = plt.subplots(nrows=nrows, ncols=2, sharey=False, sharex='col',
                            gridspec_kw={"width_ratios":[3, 2]},
                            figsize=(3.5, 2.5))
-    for i, results in enumerate(results_to_show):
+    for i, (idx, results) in enumerate(zip(include_idx, results_to_show)):
 
         for method_output in results["method_outputs"]:
             frac = method_output["magnitudes"]/method_output["detections"]
@@ -347,7 +353,8 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
         ax[i][0].set_ylabel("True\npositive rate")
                             #f"\n{results['data_name']}" if show_names else "")
         # ax[i][1].yaxis.set_label_position("right")
-        ax[i][0].set_title(results["signal_id"])
+        if show_names:
+            ax[i][0].set_title(f'{results["signal_id"]} ({idx})')
 
         ax[i, 0].grid(which="both")
 
@@ -367,29 +374,28 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
 
 @presentation(uia)
 def present_uia(results: list[Benchmark]):
-    present_benchmarks(results, include_idx=[2, 3, 4], dx=1/51200)
+    present_benchmarks(results, include_idx=[0, 2, 6], dx=1/51200)
 
 @presentation(uia)
 def present_uia_all(results: list[Benchmark]):
-    n = 3
-    for i in range(0, len(results), n):
-        present_benchmarks(results, include_idx=range(i, i+n), dx=1/51200,
+    for indices in itertools.batched(range(len(results)), 3):
+        present_benchmarks(results, include_idx=indices, dx=1/51200,
                            show_names=True)
 
 @presentation(unsw)
 def present_unsw(results: list[Benchmark]):
-    present_benchmarks(results, include_idx=[11, 12, 13], dx=1/51200)
+    indices = [26, 56, 58]
+    present_benchmarks(results, include_idx=indices, dx=1/51200)
 
 @presentation(unsw)
 def present_unsw_all(results: list[Benchmark]):
-    n = 3
-    for i in range(0, len(results), n):
-        present_benchmarks(results, include_idx=range(i, i+n), dx=1/51200,
+    for indices in itertools.batched(range(len(results)), 3):
+        present_benchmarks(results, include_idx=indices, dx=1/51200,
                            show_names=True)
 
 @presentation(cwru)
 def present_cwru(results: list[Benchmark]):
-    present_benchmarks(results, include_names=["175", "176", "215"], dx=1/48000)
+    present_benchmarks(results, include_idx=[5, 6, 7], dx=1/48000)
 
 @presentation(cwru)
 def present_cwru_all(results: list[Benchmark]):
