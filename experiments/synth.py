@@ -91,9 +91,15 @@ def benchmark(vibdata: VibrationData,
     for i, irfs_result in enumerate(irfs):
         if i >= 10: break
 
-    sigest_irfs = estimate_signature(data=vib, length=sigestlen,
-                                     indices=vib.idx_closest(irfs_result.eot)+sigestshift,
-                                     weights=irfs_result.certainty)
+    # check if irfs succeeded before trying to estimate final signature
+    if len(irfs_result.eot)>0:
+        sigest_irfs = estimate_signature(
+            data=vib,
+            length=sigestlen,
+            indices=vib.idx_closest(irfs_result.eot)+sigestshift,
+            weights=irfs_result.certainty)
+    else:
+        sigest_irfs = np.zeros((sigestlen,), dtype=float)
     # irfs_out = np.correlate(resid_ml.y, irfs_result["sigest"], mode="valid")
     # irfs_filt = Signal(irfs_out, resid_ml.x[:-len(irfs_result["sigest"])+1],
     #                     resid_ml.uniform_samples)
@@ -234,8 +240,6 @@ def benchmark_nmse(results: list[MethodResult], signature):
 @experiment(OUTPUT_PATH, json=True)
 def ex_nmse_snr(status: ExperimentStatus):
     """Monte-carlo simulation of signature NMSE for varying SNR"""
-
-    iterations = 1
     
     signature = DEFAULT_FAULT_SIGNATURE(np.arange(800)).tolist()
 
@@ -253,7 +257,7 @@ def ex_nmse_snr(status: ExperimentStatus):
     status.max_progress = len(conf_list)
     results = []
     for i, conf in enumerate(conf_list):
-        kwargs = ({**conf, "score_func": benchmark_nmse, "seed": i} for i in range(iterations))
+        kwargs = ({**conf, "score_func": benchmark_nmse, "seed": i} for i in range(MC_ITERATIONS))
         with Pool(MAX_WORKERS) as p:
             rmse_ = p.map(wrap_snr_experiment, kwargs)
             results.append({
