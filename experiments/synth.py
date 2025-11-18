@@ -449,8 +449,7 @@ def eosp_metric(ordf: float,
     xdiff = pdiff/(2*np.pi)/ordf
     eosp_corrected = eosp_detected - xdiff
     cdist = [np.min(abs(eosp_true-ec)) for ec in eosp_corrected]
-    mcdist = np.mean(cdist)
-    
+    mcdist = np.nanmean(cdist)
     return mcdist
 
 
@@ -462,13 +461,13 @@ def common_eosp_experiment(snr, seed):
         "shaft_frequency": 1000/60,
         "snr": snr,
         "healthy_component": {
-            "dataname": "unsw",
-            "signal_id": "Test 1/6Hz/vib_000002663_06.mat",
+            "dataname": "uia",
+            "signal_id": SIGNAL_ID_MAP["uia"]
         },
         "faults": [
             {
                 "ord": ordf,
-                "signature": data.synth.signt_res(6.5e3, 0.001, 30, t=np.arange(800), fs=25.e3).tolist(),
+                "signature": DEFAULT_FAULT_SIGNATURE(np.arange(800)).tolist(),
                 "std": 0.01,
             }
         ]
@@ -479,26 +478,27 @@ def common_eosp_experiment(snr, seed):
                                         signature_shift=-20,
                                         hyst_ed=0.8)
 
-    results = benchmark(desc, irfs_params, seed=seed)
-    eosp_true = results["eosp"][results["event_labels"]==1]
+    vibdata = generate_vibration(desc, seed=seed)
+    benchmark_results = benchmark(vibdata, irfs_params)
 
-    metric = [eosp_metric(ordf, eosp_true, mr["eosp"])
-                for mr in results["methods"].values()]
+    eosp_true = [eosp for (eosp, label) in zip(vibdata.eosp, vibdata.event_labels) if label==1]
+    metric = map(lambda r: eosp_metric(ordf, eosp_true, r.eosp), benchmark_results)
+    return list(metric)
 
-    return metric
 
-
-@experiment(OUTPUT_PATH, json=False)
+@experiment(OUTPUT_PATH, json=True)
 def ex_eosp(status: ExperimentStatus):
-    snr_to_eval = np.logspace(-2, 0, 10).tolist()
+    snr_to_eval = np.logspace(-3, 0, 10).tolist()
     status.max_progress = len(snr_to_eval)
+    metrics = []
     for i, snr in enumerate(snr_to_eval):
         args = [(snr, seed) for seed in range(MC_ITERATIONS)]
         with Pool(MAX_WORKERS) as p:
             metric = p.starmap(common_eosp_experiment, args)
+        metrics.append(np.mean(metric, axis=0).tolist())
         status.progress = i+1
     
-    return snr_to_eval, metric
+    return snr_to_eval, metrics
 
 
 @presentation(ex_eosp)
@@ -506,7 +506,6 @@ def pr_eosp(results):
     snr, metric = results
 
     metric = np.reshape(metric, (len(snr), -1, 6))
-    snr = 10*np.log10(snr)
     mean_metric = np.mean(metric, 1)
     
     matplotlib.rcParams.update({"font.size": 6})
@@ -517,10 +516,11 @@ def pr_eosp(results):
     cmap_idx = [0, 1, 2, 1, 2, 3]
     for i in range(mean_metric.shape[-1]):
         ax.plot(snr, mean_metric[:,i], marker=markers[i], c=cmap(cmap_idx[i]))
-    ax.set_xlabel("SNR (dB)")
-    ax.set_ylabel("EOSP error\n(revs)")
+    ax.set_xlabel("SNR")
+    ax.set_ylabel("EOT error\n(s)")
     ax.grid()
-    ax.set_yticks([0.0, 0.02, 0.04, 0.06])
+    ax.set_xscale("log")
+    #ax.set_yticks([0.0, 0.02, 0.04, 0.06])
     plt.legend(legend, ncol=len(legend)//2, loc="upper center",
                bbox_to_anchor=(0.5, 1.3))
     plt.tight_layout(pad=0.0)
