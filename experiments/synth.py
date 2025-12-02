@@ -27,11 +27,20 @@ from config import load_config
 
 from simsim import experiment, presentation, ExperimentStatus
 
+
 cfg = load_config()
 
-OUTPUT_PATH = "results/synth"
+
+OUTPUT_PATH = "results/synth2"
 MC_ITERATIONS = cfg.get("mc_iterations", 30)
 MAX_WORKERS = cfg.get("max_workers", None)
+
+
+SIGNAL_ID_MAP = {
+    data.DataName.UIA: "y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5",
+    data.DataName.UNSW: "Test 1/6Hz/vib_000002663_06.mat",
+    data.DataName.CWRU: "099",
+}
 
 
 def estimate_signat(signal: Signal, indices: Sequence[int],
@@ -177,22 +186,50 @@ def estimate_nmse(signature, maxshift, estimate):
     return nmse[idxmin]
 
 
-SIGNAL_ID_MAP = {
-    data.DataName.UIA: "y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5",
-    data.DataName.UNSW: "Test 1/6Hz/vib_000002663_06.mat",
-    data.DataName.CWRU: "099",
-}
+def benchmark_nmse(results: list[MethodResult], signature):
+    return list(map(partial(estimate_nmse, signature, 1000),
+               (result.sigest for result in results)))
 
 
-def snr_experiment(seed: int, score_func: Callable[[MethodResult], Any],
-                   snr: float, dataname: data.DataName,
-                   anomalous: int, signature, score_args=()):
+def estimate_fsize(sigest, stpres, impres):
+    idx0 = np.argmax(np.correlate(sigest, stpres, mode="full"))
+    idx1 = np.argmax(np.correlate(sigest, impres, mode="full"))
+    return idx1-idx0
+
+
+def eosp_metric(ordf: float,
+                eosp_true: Sequence[float],
+                eosp_detected: Sequence[float]) -> float:
+    """Compute a metric quantifying the error of detected EOSPs"""
+    ptru = np.angle(event_spectrum(ordf, eosp_true))#+np.pi
+    pdet = np.angle(event_spectrum(ordf, eosp_detected))#+np.pi
+    pdiff = ptru - pdet
+    xdiff = pdiff/(2*np.pi)/ordf
+    eosp_corrected = eosp_detected - xdiff
+    cdist = [np.min(abs(eosp_true-ec)) for ec in eosp_corrected]
+    mcdist = np.nanmean(cdist)
+    return mcdist
+
+
+def snr_experiment(seed: int,
+                   snr: float,
+                   dataname: data.DataName,
+                   anomalous: int,
+                   fsize: int):
     """General SNR experiment. This function is called by monte-carlo
     experiments using multiprocessing and therefore needs to be defined
     on module-level."""
     ordf = 5.0
     fs = 51200
-    seed = 0
+    
+    sig_f = 6.5e3
+    sig_tau = 0.001
+    sig_fs = 25.e3
+    sig_t = np.arange(800)
+    stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t/sig_fs)
+    impres = data.synth.signt_impres(sig_f, sig_tau, sig_t/sig_fs)
+    signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
+    
     signature_anomalous = DEFAULT_ANOMALY_SIGNATURE(np.arange(800)).tolist()
 
     desc: VibrationDescriptor = {
@@ -224,32 +261,44 @@ def snr_experiment(seed: int, score_func: Callable[[MethodResult], Any],
 
     vibdata = generate_vibration(desc, seed=seed)
     benchmark_results = benchmark(vibdata, irfs_params) 
-    return score_func(benchmark_results, *score_args)
+
+    # nmse
+    nmse = map(partial(estimate_nmse, signature, 1000),
+               (res.sigest for res in benchmark_results))
+    
+    # fsize error
+    fse_error = map(lambda sigest: abs(fsize-estimate_fsize(sigest, stpres, impres)),
+                  (res.sigest for res in benchmark_results))
+    
+    # eosp error
+    eosp_true = [eosp for (eosp, label) in zip(vibdata.eosp, vibdata.event_labels) if label==1]
+    eosp_error = map(lambda r: eosp_metric(ordf, eosp_true, r.eosp), benchmark_results)
+
+    return {
+        "nmse": list(nmse),
+        "fse_error": list(fse_error),
+        "eosp_error": list(eosp_error)
+    }
 
 
 def wrap_snr_experiment(kwargs):
     return snr_experiment(**kwargs)
 
-
-
-def benchmark_nmse(results: list[MethodResult], signature):
-    return list(map(partial(estimate_nmse, signature, 1000),
-               (result.sigest for result in results)))
+def extract_metric(results: list[dict], name: str):
+    return [r[name] for r in results]
 
 
 @experiment(OUTPUT_PATH, json=True)
-def ex_nmse_snr(status: ExperimentStatus):
+def ex_snr(status: ExperimentStatus):
     """Monte-carlo simulation of signature NMSE for varying SNR"""
     
     signature = DEFAULT_FAULT_SIGNATURE(np.arange(800)).tolist()
 
     conf = {
-        "snr": np.logspace(-2, 0, 5).tolist(),
-        #"dataname" = [data.DataName.UIA, data.DataName.UNSW, data.DataName.CWRU],
-        "dataname": [data.DataName.UIA],
-        "anomalous": [0, 1000],
-        "signature": [signature],
-        "score_args": [(signature,),],
+        "snr": np.logspace(-2, 0, 10).tolist(),
+        "dataname": (data.DataName.UNSW,),
+        "anomalous": (0, 100,),
+        "fsize": (20,),
     }
 
     conf_list = list(dict(zip(conf.keys(), x)) for x in itertools.product(*conf.values()))
@@ -257,12 +306,15 @@ def ex_nmse_snr(status: ExperimentStatus):
     status.max_progress = len(conf_list)
     results = []
     for i, conf in enumerate(conf_list):
-        kwargs = ({**conf, "score_func": benchmark_nmse, "seed": i} for i in range(MC_ITERATIONS))
+        kwargs = ({**conf, "seed": i} for i in range(MC_ITERATIONS))
         with Pool(MAX_WORKERS) as p:
-            rmse_ = p.map(wrap_snr_experiment, kwargs)
+            res = p.map(wrap_snr_experiment, kwargs)
+            xmetric = partial(extract_metric, res)
             results.append({
-                "rmse": np.nanmean(rmse_, axis=0).tolist(),
-                "conf": conf
+                "nmse": np.nanmean(xmetric("nmse"), axis=0).tolist(),
+                "fse_error": np.nanmean(xmetric("fse_error"), axis=0).tolist(),
+                "eosp_error": np.nanmean(xmetric("eosp_error"), axis=0).tolist(),
+                "conf": conf,
             })
         status.progress = i+1
         
@@ -281,21 +333,20 @@ def results_predicate(dataname: data.DataName, anomalous: bool):
     return filt
 
 
-@presentation(ex_nmse_snr)
-def pr_nmse_snr(results):
+@presentation(ex_snr)
+def pr_nmse(results):
     matplotlib.rcParams.update({"font.size": 6})
     ylabels = ["A", "B"]
     legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
     markers = ["o", "^", "d", ".", "*", "+"]
     cmap = plt.get_cmap("tab10")
     cmap_idx = [0, 1, 2, 1, 2, 3]
-    for dataname in ("uia",):#, "unsw", "cwru"):
+    for dataname in ("unsw",):#, "unsw", "cwru"):
         _, ax = plt.subplots(2, 1, sharex=True, figsize=(3.5, 2.0))
-        plt.title(dataname.upper())
         for i, anomalous in enumerate((False, True)):
             filtres = list(filter(results_predicate(dataname, anomalous), results))
             snr = [x["conf"]["snr"] for x in filtres]
-            rmse = np.array([x["rmse"] for x in filtres])
+            rmse = np.array([x["nmse"] for x in filtres])
             snr_db = 10*np.log10(snr)
             for j in range(rmse.shape[-1]):
                 ax[i].plot(snr, rmse[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
@@ -303,9 +354,7 @@ def pr_nmse_snr(results):
             ax[i].grid()
             ax[i].set_yticks([0.0, 0.5, 1.0])
             ax[i].set_xscale("log")
-            #ax[i].set_xticks(range(-20, 1, 5))
-            
-        #ax[-1].set_xlabel("SNR (dB)")
+
         ax[-1].set_xlabel("SNR")
         ax[0].legend(legend, ncol=len(legend)//2, loc="upper center",
                     bbox_to_anchor=(0.5, 1.3))
@@ -315,103 +364,8 @@ def pr_nmse_snr(results):
     plt.show()
 
 
-# --- Fault size experiments -------------------------------------------
-
-@dataclass
-class FseExperimentParams:
-    model: sizeregr.Model
-    seed: int
-    snr: float
-    fsize: int
-    shift: int
-    dataname: data.DataName
-
-
-def fse(seed: int, snr: float, fsize: int):
-    """FSE SNR experiment. This function is called by monte-carlo
-    experiments using multiprocessing and therefore needs to be defined
-    on module-level."""
-    ordf = 5.0
-    fs = 51200
-    
-    sig_f = 6.5e3
-    sig_tau = 0.001
-    sig_fs = 25.e3
-    sig_t = np.arange(800)
-    stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t/sig_fs)
-    impres = data.synth.signt_impres(sig_f, sig_tau, sig_t/sig_fs)
-    signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
-    
-    signature_anomalous = DEFAULT_ANOMALY_SIGNATURE(np.arange(800)).tolist()
-
-    desc: VibrationDescriptor = {
-        "length": 100000,
-        "sample_frequency": fs,
-        "shaft_frequency": 1000/60,
-        "snr": snr,
-        "healthy_component": {
-            "dataname": "uia",
-            "signal_id": SIGNAL_ID_MAP["uia"]
-        },
-        "faults": [
-            {
-                "ord": ordf,
-                "signature": signature,
-                "std": 0.01,
-            }
-        ],
-        "anomaly": {
-            "amount": 0,
-            "signature": signature_anomalous,
-        }
-    }
-    
-    irfs_params = algorithms.IRFSParams(fmin=ordf-0.5, fmax=ordf+0.5,
-                                        signature_length=200,
-                                        signature_shift=-40,
-                                        hyst_ed=0.8)
-
-    def estimate_fsize(sigest):
-        idx0 = np.argmax(np.correlate(sigest, stpres, mode="full"))
-        idx1 = np.argmax(np.correlate(sigest, impres, mode="full"))
-        return idx1-idx0
-
-
-    vibdata = generate_vibration(desc, seed=seed)
-    benchmark_results = benchmark(vibdata, irfs_params)
-
-    fse_err = map(lambda sigest: abs(fsize-estimate_fsize(sigest)),
-                  (res.sigest for res in benchmark_results))
-    
-    return list(fse_err)
-
-
-@experiment(OUTPUT_PATH, json=True)
-def ex_fsize_snr(status: ExperimentStatus):
-    """Monte-carlo simulation of fault size estimation (FSE) for varying SNR"""
-    exp_params = []
-
-    # experiment variables
-    #fsize = lambda i: 5+int(25*i/MC_ITERATIONS)
-    fsize = lambda i: 20
-    snr_values = np.logspace(-3, 0, 10)
-
-    status.max_progress = len(snr_values)
-
-    err = []
-    for progress, snr in enumerate(snr_values):
-        args_ = [(i, snr, fsize(i)) for i in range(MC_ITERATIONS)]
-        with Pool(MAX_WORKERS) as p:
-            err_ = p.starmap(fse, args_)
-            err.append(np.nanmean(err_, axis=0).tolist())
-        
-        status.progress = progress+1
-
-    return snr_values.tolist(), err
-
-
-@presentation(ex_fsize_snr)
-def pr_fsize_snr(results):
+@presentation(ex_snr)
+def pr_fsize(results):
     matplotlib.rcParams.update({"font.size": 6})
     legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
     markers = ["o", "^", "d", ".", "*", "+"]
@@ -419,13 +373,12 @@ def pr_fsize_snr(results):
     cmap_idx = [0, 1, 2, 1, 2, 3]
     _, ax = plt.subplots(1, 1, sharex=True, figsize=(3.5, 2.0))
     
-    snr, err = results
-    #snr_db = 10*np.log10(snr)
-    errarr = np.array(err).T
-    for j, err_ in enumerate(errarr):
-        ax.plot(snr, err_, marker=markers[j], c=cmap(cmap_idx[j]))
+    filtres = list(filter(results_predicate("unsw", True), results))
+    snr = [r["conf"]["snr"] for r in filtres]
+    err = np.array([r["fse_error"] for r in filtres])
+    for j in range(err.shape[-1]):
+        ax.plot(snr, err[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
     ax.grid()
-    #ax.set_xticks(range(-20, 1, 5))
         
     ax.set_xlabel("SNR")
     ax.set_xscale("log")
@@ -437,85 +390,21 @@ def pr_fsize_snr(results):
     
     plt.show()
 
-# --- EOSP experiments --------------------------------------------------------
 
-def eosp_metric(ordf: float,
-                eosp_true: Sequence[float],
-                eosp_detected: Sequence[float]) -> float:
-    """Compute a metric quantifying the error of detected EOSPs"""
-    ptru = np.angle(event_spectrum(ordf, eosp_true))#+np.pi
-    pdet = np.angle(event_spectrum(ordf, eosp_detected))#+np.pi
-    pdiff = ptru - pdet
-    xdiff = pdiff/(2*np.pi)/ordf
-    eosp_corrected = eosp_detected - xdiff
-    cdist = [np.min(abs(eosp_true-ec)) for ec in eosp_corrected]
-    mcdist = np.nanmean(cdist)
-    return mcdist
-
-
-def common_eosp_experiment(snr, seed):
-    ordf = 5.0
-    desc: VibrationDescriptor = {
-        "length": 100000,
-        "sample_frequency": 51200,
-        "shaft_frequency": 1000/60,
-        "snr": snr,
-        "healthy_component": {
-            "dataname": "uia",
-            "signal_id": SIGNAL_ID_MAP["uia"]
-        },
-        "faults": [
-            {
-                "ord": ordf,
-                "signature": DEFAULT_FAULT_SIGNATURE(np.arange(800)).tolist(),
-                "std": 0.01,
-            }
-        ]
-    }
-    
-    irfs_params = algorithms.IRFSParams(fmin=ordf-0.5, fmax=ordf+0.5,
-                                        signature_length=200,
-                                        signature_shift=-20,
-                                        hyst_ed=0.8)
-
-    vibdata = generate_vibration(desc, seed=seed)
-    benchmark_results = benchmark(vibdata, irfs_params)
-
-    eosp_true = [eosp for (eosp, label) in zip(vibdata.eosp, vibdata.event_labels) if label==1]
-    metric = map(lambda r: eosp_metric(ordf, eosp_true, r.eosp), benchmark_results)
-    return list(metric)
-
-
-@experiment(OUTPUT_PATH, json=True)
-def ex_eosp(status: ExperimentStatus):
-    snr_to_eval = np.logspace(-3, 0, 10).tolist()
-    status.max_progress = len(snr_to_eval)
-    metrics = []
-    for i, snr in enumerate(snr_to_eval):
-        args = [(snr, seed) for seed in range(MC_ITERATIONS)]
-        with Pool(MAX_WORKERS) as p:
-            metric = p.starmap(common_eosp_experiment, args)
-        metrics.append(np.mean(metric, axis=0).tolist())
-        status.progress = i+1
-    
-    return snr_to_eval, metrics
-
-
-@presentation(ex_eosp)
+@presentation(ex_snr)
 def pr_eosp(results):
-    snr, metric = results
-
-    metric = np.reshape(metric, (len(snr), -1, 6))
-    mean_metric = np.mean(metric, 1)
-    
     matplotlib.rcParams.update({"font.size": 6})
     fig, ax = plt.subplots(figsize=(3.5, 1.5))
     legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
     markers = ["o", "^", "d", ".", "*", "+"]
     cmap = plt.get_cmap("tab10")
     cmap_idx = [0, 1, 2, 1, 2, 3]
-    for i in range(mean_metric.shape[-1]):
-        ax.plot(snr, mean_metric[:,i], marker=markers[i], c=cmap(cmap_idx[i]))
+    
+    filtres = list(filter(results_predicate("unsw", True), results))
+    snr = [r["conf"]["snr"] for r in filtres]
+    err = np.array([r["eosp_error"] for r in filtres])
+    for j in range(err.shape[-1]):
+        ax.plot(snr, err[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
     ax.set_xlabel("SNR")
     ax.set_ylabel("EOT error\n(s)")
     ax.grid()
