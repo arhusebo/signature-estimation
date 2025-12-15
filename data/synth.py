@@ -13,12 +13,14 @@ class FaultDescriptor(TypedDict):
     name: NotRequired[str]
     ord: float
     std: float
+    snr: NotRequired[float]
     signature: Callable[[int], npt.ArrayLike]
 
 
 class AnomalyDescriptor(TypedDict):
     amount: int
     signature: Callable[[int], npt.ArrayLike]
+    snr: NotRequired[float]
 
 
 class HealthyComponentDescriptor(TypedDict):
@@ -32,7 +34,6 @@ class VibrationDescriptor(TypedDict):
     shaft_frequency: float
     healthy_component: HealthyComponentDescriptor
     faults: Sequence[FaultDescriptor]
-    snr: NotRequired[float]
     anomaly: NotRequired[AnomalyDescriptor]
 
 
@@ -58,7 +59,7 @@ def signt_res(f, tau, d, t, fs=1.0):
 
 
 def DEFAULT_ANOMALY_SIGNATURE(n):
-    return signt_res(8.e3, 0.001, 30, n, fs=25.e3)
+    return (n>=0)*np.sinc(n/2+1)
 
 
 def DEFAULT_FAULT_SIGNATURE(n, d=30):
@@ -107,7 +108,18 @@ def generate_vibration(desc: VibrationDescriptor, seed=0) -> VibrationData:
     different value of 'seed' is used.
     """
     rng = np.random.default_rng(seed)
-    resid = np.zeros((desc["length"]), dtype=float)
+
+    # Noise (healthy) component
+    # A random slice is extracted from the signal `signal_id` of dataset
+    # `dataname` and used as the noise component of the synthetic signal.
+    dl = data.dataloader(desc["healthy_component"]["dataname"])
+    noise_full = dl[desc["healthy_component"]["signal_id"]].vib.y
+    idx0 = rng.choice(len(noise_full)-desc["length"])
+    noise = noise_full[idx0:idx0+desc["length"]]
+    pow_noise = np.var(noise)
+
+
+    signal = np.zeros((desc["length"]), dtype=float)
     eosp_ = []
     elbl_ = []
 
@@ -116,41 +128,42 @@ def generate_vibration(desc: VibrationDescriptor, seed=0) -> VibrationData:
     for i, fault in enumerate(desc["faults"]):
         eosp = np.arange(0, eosp_end, 1/fault["ord"])
         eosp += rng.standard_normal(len(eosp))*fault["std"]
-        resid += signature_train(eosp, fault["signature"], desc["length"],
+        component = signature_train(eosp, fault["signature"], desc["length"],
                                  fs=desc["sample_frequency"],
                                  fshaft=desc["shaft_frequency"])
 
         eosp_.append(eosp)
         elbl_.append(np.ones_like(eosp, dtype=int)+i)
 
+        if snr := fault.get("snr", None):
+            assert snr > 0.0
+            pow_component = pow_noise*snr
+            component = np.sqrt(pow_component)*component/np.std(fault["signature"])
+
+
+        signal += component
+            
+
     # Generate anomaly signatures
     if anomaly := desc.get("anomaly", None):
         eosp = rng.uniform(0, eosp_end, anomaly["amount"])
-        resid += signature_train(eosp, anomaly["signature"], desc["length"],
+        component = signature_train(eosp, anomaly["signature"], desc["length"],
                                  fs=desc["sample_frequency"],
                                  fshaft=desc["shaft_frequency"])
 
         eosp_.append(eosp)
         elbl_.append(np.zeros_like(eosp, dtype=int))
+        
+        if snr := anomaly.get("snr", None):
+            assert snr > 0.0
+            pow_component = pow_noise*snr
+            component = np.sqrt(pow_component)*component/np.std(anomaly["signature"])
     
-    # Noise (healthy) component
-    # A random slice is extracted from the signal `signal_id` of dataset
-    # `dataname` and used as the noise component of the synthetic signal.
-    dl = data.dataloader(desc["healthy_component"]["dataname"])
-    noise_full = dl[desc["healthy_component"]["signal_id"]].vib.y
-    idx0 = rng.choice(len(noise_full)-desc["length"])
-    noise = noise_full[idx0:idx0+desc["length"]]
-
-    pow_resid = np.var(resid)
-    if snr := desc.get("snr", None):
-        assert snr > 0.0
-        pow_noise = np.var(noise)
-        pow_resid = pow_noise*snr
-        resid = np.sqrt(pow_resid)*resid/np.std(resid)
+        signal += component
 
     # Instantiate and return signal object
     dx = 1/(desc["sample_frequency"]/desc["shaft_frequency"])
-    out = Signal.from_uniform_samples(noise + resid, dx)
+    out = Signal.from_uniform_samples(noise + signal, dx)
     event_shaft_positions = np.concatenate(eosp_)#*dx
     event_labels = np.concatenate(elbl_)
     return VibrationData(desc=desc, signal=out, eosp=event_shaft_positions,

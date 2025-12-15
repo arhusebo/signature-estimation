@@ -31,7 +31,7 @@ from simsim import experiment, presentation, ExperimentStatus
 cfg = load_config()
 
 
-OUTPUT_PATH = "results/synth2"
+OUTPUT_PATH = "results/synth"
 MC_ITERATIONS = cfg.get("mc_iterations", 30)
 MAX_WORKERS = cfg.get("max_workers", None)
 
@@ -41,20 +41,6 @@ SIGNAL_ID_MAP = {
     data.DataName.UNSW: "Test 1/6Hz/vib_000002663_06.mat",
     data.DataName.CWRU: "099",
 }
-
-
-def estimate_signat(signal: Signal, indices: Sequence[int],
-                    siglen: int, shift: int) -> Sequence[float]:
-    """Estimates the signature from the signal, signal indices,
-    a desired signature length and a shift."""
-    n_samples = 0
-    running_sum = np.zeros((siglen,))
-    for idx in indices:
-        if idx+shift >= 0 and idx+shift+siglen < len(signal):
-            n_samples += 1
-            running_sum += signal.y[idx+shift:idx+shift+siglen]
-    sig = running_sum/n_samples
-    return sig
 
 
 @dataclass
@@ -156,7 +142,7 @@ def benchmark(vibdata: VibrationData,
 
 # --- NMSE experiments --------------------------------------------------------
 
-def nmse_shift(signature, estimate, shiftmax=100):
+def nmse_shift(signature, maxshift, estimate):
     # TODO: Continue here
     sigest = estimate.copy()
     sigest /= np.linalg.norm(sigest)
@@ -165,13 +151,13 @@ def nmse_shift(signature, estimate, shiftmax=100):
     sigtrue = signature[:siglen]
     sigtrue /= np.linalg.norm(sigtrue)
 
-    if shiftmax>0:
-        sigestpad = np.pad(sigest, shiftmax)
+    if maxshift>0:
+        sigestpad = np.pad(sigest, maxshift)
         # Since both signature estimate and true signature are normalised,
         # it is not neccesary to normalise the MSE estimate, i.e. by dividing
         # by the true signal energy.
-        nmse = np.sum([(sigestpad[i:i+siglen] - sigtrue)**2 for i in range(2*shiftmax)], axis=-1)
-        n = np.arange(2*shiftmax)-shiftmax
+        nmse = np.sum([(sigestpad[i:i+siglen] - sigtrue)**2 for i in range(2*maxshift)], axis=-1)
+        n = np.arange(2*maxshift)-maxshift
     else:
         nmse = np.sum((sigest - sigtrue)[np.newaxis,:]**2, axis=-1)
         n = np.zeros((1,))
@@ -181,14 +167,9 @@ def nmse_shift(signature, estimate, shiftmax=100):
 
 def estimate_nmse(signature, maxshift, estimate):
     """Estimate the NMSE between a signature `estimate` and the true `signature`"""
-    nmse, _ = nmse_shift(signature, estimate, maxshift)
+    nmse, _ = nmse_shift(signature, maxshift, estimate)
     idxmin = np.argmin(nmse)
     return nmse[idxmin]
-
-
-def benchmark_nmse(results: list[MethodResult], signature):
-    return list(map(partial(estimate_nmse, signature, 1000),
-               (result.sigest for result in results)))
 
 
 def estimate_fsize(sigest, stpres, impres):
@@ -236,7 +217,6 @@ def snr_experiment(seed: int,
         "length": 100000,
         "sample_frequency": fs,
         "shaft_frequency": 1000/60,
-        "snr": snr,
         "healthy_component": {
             "dataname": dataname,
             "signal_id": SIGNAL_ID_MAP[dataname]
@@ -246,11 +226,13 @@ def snr_experiment(seed: int,
                 "ord": ordf,
                 "signature": signature,
                 "std": 0.01,
+                "snr": snr,
             }
         ],
         "anomaly": {
             "amount": anomalous,
             "signature": signature_anomalous,
+            "snr": 5*snr,
         }
     }
     
@@ -291,14 +273,12 @@ def extract_metric(results: list[dict], name: str):
 @experiment(OUTPUT_PATH, json=True)
 def ex_snr(status: ExperimentStatus):
     """Monte-carlo simulation of signature NMSE for varying SNR"""
-    
-    signature = DEFAULT_FAULT_SIGNATURE(np.arange(800)).tolist()
 
     conf = {
-        "snr": np.logspace(-2, 0, 10).tolist(),
-        "dataname": (data.DataName.UNSW,),
-        "anomalous": (0, 100,),
-        "fsize": (20,),
+        "snr": np.logspace(-3, 0, 10).tolist(),
+        "dataname": [data.DataName.UNSW,],
+        "anomalous": [0, 10,],
+        "fsize": [20,],
     }
 
     conf_list = list(dict(zip(conf.keys(), x)) for x in itertools.product(*conf.values()))
@@ -311,9 +291,9 @@ def ex_snr(status: ExperimentStatus):
             res = p.map(wrap_snr_experiment, kwargs)
             xmetric = partial(extract_metric, res)
             results.append({
-                "nmse": np.nanmean(xmetric("nmse"), axis=0).tolist(),
-                "fse_error": np.nanmean(xmetric("fse_error"), axis=0).tolist(),
-                "eosp_error": np.nanmean(xmetric("eosp_error"), axis=0).tolist(),
+                "nmse": np.mean(xmetric("nmse"), axis=0).tolist(),
+                "fse_error": np.mean(xmetric("fse_error"), axis=0).tolist(),
+                "eosp_error": np.mean(xmetric("eosp_error"), axis=0).tolist(),
                 "conf": conf,
             })
         status.progress = i+1
@@ -341,19 +321,19 @@ def pr_nmse(results):
     markers = ["o", "^", "d", ".", "*", "+"]
     cmap = plt.get_cmap("tab10")
     cmap_idx = [0, 1, 2, 1, 2, 3]
-    for dataname in ("unsw",):#, "unsw", "cwru"):
-        _, ax = plt.subplots(2, 1, sharex=True, figsize=(3.5, 2.0))
-        for i, anomalous in enumerate((False, True)):
-            filtres = list(filter(results_predicate(dataname, anomalous), results))
-            snr = [x["conf"]["snr"] for x in filtres]
-            rmse = np.array([x["nmse"] for x in filtres])
-            snr_db = 10*np.log10(snr)
-            for j in range(rmse.shape[-1]):
-                ax[i].plot(snr, rmse[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
-            ax[i].set_ylabel(f"NMSE\n{ylabels[i]}")
-            ax[i].grid()
-            ax[i].set_yticks([0.0, 0.5, 1.0])
-            ax[i].set_xscale("log")
+    dataname = "unsw"
+    _, ax = plt.subplots(2, 1, sharex=True, figsize=(3.5, 2.0))
+    for i, anomalous in enumerate((False, True)):
+        filtres = list(filter(results_predicate(dataname, anomalous), results))
+        snr = [x["conf"]["snr"] for x in filtres]
+        rmse = np.array([x["nmse"] for x in filtres])
+        snr_db = 10*np.log10(snr)
+        for j in range(rmse.shape[-1]):
+            ax[i].plot(snr, rmse[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
+        ax[i].set_ylabel(f"NMSE\n{ylabels[i]}")
+        ax[i].grid()
+        ax[i].set_yticks([0.0, 0.5, 1.0])
+        ax[i].set_xscale("log")
 
         ax[-1].set_xlabel("SNR")
         ax[0].legend(legend, ncol=len(legend)//2, loc="upper center",
@@ -362,7 +342,6 @@ def pr_nmse(results):
         plt.tight_layout(pad=0.0)
     
     plt.show()
-
 
 @presentation(ex_snr)
 def pr_fsize(results):
@@ -400,7 +379,7 @@ def pr_eosp(results):
     cmap = plt.get_cmap("tab10")
     cmap_idx = [0, 1, 2, 1, 2, 3]
     
-    filtres = list(filter(results_predicate("unsw", True), results))
+    filtres = list(filter(results_predicate("unsw", False), results))
     snr = [r["conf"]["snr"] for r in filtres]
     err = np.array([r["eosp_error"] for r in filtres])
     for j in range(err.shape[-1]):
@@ -413,4 +392,73 @@ def pr_eosp(results):
     plt.legend(legend, ncol=len(legend)//2, loc="upper center",
                bbox_to_anchor=(0.5, 1.3))
     plt.tight_layout(pad=0.0)
+    plt.show()
+
+
+@experiment(OUTPUT_PATH)
+def ex_compare_sigest():
+    
+
+    seed = 0
+    snr = 0.005
+    dataname = "unsw"
+    anomalous = 10
+    fsize = 20
+
+
+    ordf = 5.0
+    fs = 51200
+    
+    sig_f = 6.5e3
+    sig_tau = 0.001
+    sig_fs = 25.e3
+    sig_t = np.arange(800)
+    stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t/sig_fs)
+    impres = data.synth.signt_impres(sig_f, sig_tau, sig_t/sig_fs)
+    signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
+    
+    signature_anomalous = DEFAULT_ANOMALY_SIGNATURE(np.arange(800)).tolist()
+
+    desc: VibrationDescriptor = {
+        "length": 100000,
+        "sample_frequency": fs,
+        "shaft_frequency": 1000/60,
+        "healthy_component": {
+            "dataname": dataname,
+            "signal_id": SIGNAL_ID_MAP[dataname]
+        },
+        "faults": [
+            {
+                "ord": ordf,
+                "signature": signature,
+                "std": 0.01,
+                "snr": snr,
+            }
+        ],
+        "anomaly": {
+            "amount": anomalous,
+            "signature": signature_anomalous,
+            "snr": 5*snr,
+        }
+    }
+    
+    irfs_params = algorithms.IRFSParams(fmin=ordf-0.5, fmax=ordf+0.5,
+                                        signature_length=200,
+                                        signature_shift=-20,
+                                        hyst_ed=0.8)
+
+    vibdata = generate_vibration(desc, seed=seed)
+    benchmark_results = benchmark(vibdata, irfs_params)
+
+    return benchmark_results
+
+
+@presentation(ex_compare_sigest)
+def pr_compare_sigest(results: list[MethodResult]):
+
+    fig, ax = plt.subplots(len(results), 1, sharex=True)
+    for i, method in enumerate(results):
+        ax[i].plot(method.sigest)
+        ax[i].set_ylabel(method.name)
+    
     plt.show()
