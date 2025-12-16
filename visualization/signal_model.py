@@ -3,8 +3,9 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 from faultevent.signal import Signal, ARModel
-from data.uia import UiADataLoader
-from data import uia_path
+import data
+import data.synth
+from config import load_config
 
 t_end = 0.02
 fs = 51200
@@ -12,34 +13,37 @@ df = 0.005
 
 t = np.arange(0, t_end, 1/fs)
 
-dl = UiADataLoader(uia_path)
-mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
-model = ARModel.from_signal(mh.vib[:10000], 117) # AR model
+cfg = load_config()
 
-siginp = np.zeros((5,))
-siginp[:4] = -5.0
-siginp[4] = 10.0
+dl = data.dataloader(data.DataName.UNSW)
+#mh = dl["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
+mh = dl["Test 1/6Hz/vib_000002663_06.mat"]
 
-sig_ = np.zeros_like(t)
-sig_[:len(siginp)] = siginp
-# sig_[10] = 1.0
-sig_ = Signal.from_uniform_samples(sig_, 1/fs)
-sig = model.process(sig_)
+sig_f = 6.5e3
+sig_tau = 0.001
+sig_fs = 25.e3
+fsize = 20
+sig_t = np.arange(800)
+signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
 
 tf = np.arange(0, t_end, df)
+idx_signature = np.array(tf*fs, dtype=int)
 
-sigtilde_ = np.zeros_like(t)
-for t_ in tf:
-    idx = int(t_*fs)
-    sigtilde_[idx:idx+len(siginp)] = siginp
-sigtilde_ = Signal.from_uniform_samples(sigtilde_, 1/fs)
-sigtilde = model.process(sigtilde_)
+sigtilde = np.zeros_like(t)
+for idx in idx_signature:
+    idxmax = min(len(sigtilde), idx+len(signature))
+    print(idx, idxmax)
+    sigtilde[idx:idxmax] = signature[:idxmax-idx]
+sigtilde = Signal.from_uniform_samples(sigtilde, 1/fs)
+#sigtilde = Signal.from_uniform_samples(impulse_train, 1/fs)
 
+sig = np.zeros_like(t)
+sig[:len(signature)] = signature
+sig = Signal.from_uniform_samples(sig, 1/fs)
 
 h0_ = Signal.from_uniform_samples(np.random.randn(len(t)), 1/fs)
-h0 = model.process(h0_)
 
-
+h0 = mh.vib[:len(t)]
 
 matplotlib.rcParams.update({"font.size": 6})
 
@@ -49,12 +53,12 @@ ax[0].plot(sig.x, sig.y, c="k", lw=0.5)
 ax[0].set_ylabel(r"$s(t)$")
 
 ax[1].plot(sigtilde.x, sigtilde.y, c="k", lw=0.5)
-ax[1].set_ylabel(r"$\tilde{s}(t)$")
+ax[1].set_ylabel(r"$x(t)$")
 
 ax[2].plot(h0.x, h0.y, c="k", lw=0.5)
 ax[2].set_ylabel(r"$\epsilon(t)$")
 
-ax[3].plot(h0.x, h0.y+sigtilde.y, c="k", lw=0.5)
+ax[3].plot(h0.x, h0.y+0.05*sigtilde.y, c="k", lw=0.5)
 ax[3].set_ylabel(r"$y(t)$")
 
 
