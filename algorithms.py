@@ -7,7 +7,7 @@ import scipy.signal
 import scipy.stats
 import faultevent.event as evt
 import faultevent.signal as sig
-from faultevent.signal import MatchedFilterMaximumDetector
+from faultevent.signal import Detector, AnalyticMatchedFilterDetector
 from faultevent import util as utl
 
 
@@ -57,15 +57,26 @@ def irfs_iteration(params: IRFSParams,
 
     sigest = utl.estimate_signature(signal, params.signature_length,
                                     x=eot, weights=certainty,)
-    det = MatchedFilterMaximumDetector(sigest)
+    
+    det = AnalyticMatchedFilterDetector(sigest)
     stat = det.statistic(signal)
+    stat_env = sig.Signal(abs(stat.y), stat.x)
+    stat_real = sig.Signal(stat.y.real, stat.x)
+
     if normthr is None:
-        thr, _ = utl.best_threshold(stat, [(params.fmin, params.fmax)],
+        thr, _ = utl.best_threshold(stat_env, [(params.fmin, params.fmax)],
                                     n=params.threshold_trials)
     else:
         thr = normthr*np.linalg.norm(sigest)
 
-    cmp = sig.Comparison.from_comparator(stat, thr)
+    cmp_env = sig.Comparison.from_comparator(stat_env, thr, hysteresis=0.2*thr)
+    cmp = sig.Comparison(
+        data=stat_real,
+        state=cmp_env.state,
+        regions=cmp_env.regions,
+        threshold=cmp_env.threshold,
+        hysteresis=cmp_env.hysteresis,
+        empty=cmp_env.empty,)
     eot_new, mag = sig.matched_filter_location_estimates(cmp)
     freq, _ = evt.find_order(eot_new, params.fmin, params.fmax)
     mu, kappa = evt.fit_vonmises(freq, eot_new)
