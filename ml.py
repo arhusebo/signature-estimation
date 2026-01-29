@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 import data
+import data.synth
 from config import load_config
 
 from faultevent.data import DataLoader
@@ -39,16 +40,26 @@ class Model(torch.nn.Module):
         self.downsample += [
             torch.nn.Conv1d(hidden_channels, hidden_channels, kernel_size,
                             stride=stride, dilation=dilation)
-            for _ in range(depth)
+            for _ in range(depth-1)
+        ]
+
+        self.downsample += [
+            torch.nn.Conv1d(hidden_channels, 1, kernel_size,
+                            stride=stride, dilation=dilation)
         ]
 
         # len_out = floor[ (len_in - 1)/stride + 1 ]
-
         self.upsample = [
+            torch.nn.ConvTranspose1d(1, hidden_channels,
+                                     kernel_size, stride=stride,
+                                     dilation=dilation)
+        ]
+
+        self.upsample += [
             torch.nn.ConvTranspose1d(hidden_channels, hidden_channels,
                                      kernel_size, stride=stride,
                                      dilation=dilation)
-            for _ in range(depth)
+            for _ in range(depth-1)
         ]
         self.upsample += [torch.nn.ConvTranspose1d(hidden_channels, 1,
                                                 kernel_size, stride=stride,
@@ -93,7 +104,8 @@ def sequence_augmentation(signal, snr: float):
     Therefore, the signal should be augmented by white noise,
     occurring in pulses at random points in time.
     """
-    pulse_length = 30
+    pulse_length = 400
+    sigt = np.arange(pulse_length)
 
     tilde = np.zeros_like(signal)
 
@@ -109,11 +121,19 @@ def sequence_augmentation(signal, snr: float):
             break
         idx1 = min(idx0 + pulse_length, len(signal))
         pulse_length_actual = idx1 - idx0
-        signature = np.random.randn(pulse_length_actual)*std_tilde
-        tilde[idx0:idx1] = signature
+        #signature = np.random.randn(pulse_length_actual)*std_tilde
+
+        signature = data.synth.signt_res(
+                f=np.random.randint(5e3, 15e3),
+                tau=0.001,
+                d=np.random.randint(5, 30),
+                t=sigt[:pulse_length_actual],
+                fs=25.e3,)
+                
+        tilde[idx0:idx1] = signature/np.std(signature)*std_tilde
         idx = idx1
 
-    return tilde
+    return signal+tilde
 
 
 type PrepDataset = Iterator[np.NDArray[np.float32]]
@@ -196,7 +216,7 @@ def train(dataset_train: PrepDataset,
         for i, batch in enumerate(train_batches):
             
             #aug_batch = map(partial(augment_sequence, 10.0), batch)
-            aug_batch = np.apply_along_axis(sequence_augmentation, -1, batch, snr=10.0)
+            aug_batch = np.apply_along_axis(sequence_augmentation, -1, batch, snr=1.0)
             
             # (N, 1, L)
             desired_shape = (batch_size, 1, -1)
@@ -206,7 +226,7 @@ def train(dataset_train: PrepDataset,
             optimizer.zero_grad()
 
             # model specifics
-            pred_batch = model(batch)
+            pred_batch = model(aug_batch)
 
             loss = loss_fn(pred_batch, batch)
             loss.backward()
