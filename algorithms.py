@@ -11,17 +11,6 @@ from faultevent.signal import Detector, AnalyticMatchedFilterDetector
 from faultevent import util as utl
 
 
-class IRFSIterationDict(TypedDict):
-    sigest: Sequence[float]
-    eosp: Sequence[float]
-    magnitude: Sequence[float]
-    certainty: Sequence[float]
-    ordf: float
-    mu: float
-    kappa: float
-    threshold: float
-
-
 @dataclass
 class IRFSParams:
     fmin: float
@@ -32,12 +21,14 @@ class IRFSParams:
     threshold_trials: int = 10
     ed_window: int = 50
     hyst_ed: float = 0.8
+    hyst_mf: float = 0.1
+
 
 @dataclass
 class IRFSIteration:
     sigest: Sequence[float]
+    eoi: Sequence[int]
     eot: Sequence[float]
-    magnitude: Sequence[float]
     certainty: Sequence[float]
     freq: float
     mu: float
@@ -47,17 +38,11 @@ class IRFSIteration:
 
 def irfs_iteration(params: IRFSParams,
                    signal: sig.Signal,
-                   eot: npt.ArrayLike,
+                   sigest: npt.ArrayLike,
                    certainty: npt.ArrayLike,
                    normthr: float | None = None) -> IRFSIteration:
     """Perform one iteration of IRFS"""
 
-    if not len(eot)==len(certainty):
-        raise ValueError("eot and certainty must be of same length")
-
-    sigest = utl.estimate_signature(signal, params.signature_length,
-                                    x=eot, weights=certainty,)
-    
     det = AnalyticMatchedFilterDetector(sigest)
     stat = det.statistic(signal)
     stat_env = sig.Signal(abs(stat.y), stat.x)
@@ -65,10 +50,14 @@ def irfs_iteration(params: IRFSParams,
 
     if normthr is None:
         thr, _ = utl.best_threshold(stat_env, [(params.fmin, params.fmax)],
-                                    n=params.threshold_trials)
+                                    n=params.threshold_trials,
+                                    hysteresis=params.hyst_mf)
     else:
         thr = normthr*np.linalg.norm(sigest)
 
+    # Perform the comparison using the detector statistic envelope,
+    # but copy the results into a new comparison that uses the detector
+    # statistic real component as data, from where the EOIs are estimated.
     cmp_env = sig.Comparison.from_comparator(stat_env, thr, hysteresis=0.2*thr)
     cmp = sig.Comparison(
         data=stat_real,
@@ -77,16 +66,18 @@ def irfs_iteration(params: IRFSParams,
         threshold=cmp_env.threshold,
         hysteresis=cmp_env.hysteresis,
         empty=cmp_env.empty,)
-    eot_new, mag = sig.matched_filter_location_estimates(cmp)
+    eoi_new = sig.matched_filter_location_estimates(cmp)
+    eot_new = cmp.data.x[eoi_new]
     freq, _ = evt.find_order(eot_new, params.fmin, params.fmax)
     mu, kappa = evt.fit_vonmises(freq, eot_new)
     z = evt.map_circle(freq, eot_new)
     crt_new = scipy.stats.vonmises.pdf(z, kappa, loc=mu)
 
+
     return IRFSIteration(
         sigest=sigest,
+        eoi=eoi_new,
         eot=eot_new,
-        magnitude=mag,
         certainty=crt_new,
         freq=freq,
         mu=mu,
@@ -102,31 +93,38 @@ def irfs(params: IRFSParams,
     subsequent iterations of IRFS"""
 
     # energy detector to estimate initial set of EOTs
-    eot0 = enedetloc(data=signal,
+    eoi0 = enedetloc(data=signal,
                      search_intervals=[(params.fmin, params.fmax)],
                      enedetsize=params.ed_window,
                      hysteresis=params.hyst_ed)
 
-    if len(eot0)==0:
+    if len(eoi0)==0:
         raise ValueError("energy detector did not detect any events")
 
     # adjust for shift
-    eot0 += params.signature_shift*signal.dx
-    crt0 = np.ones_like(eot0)
-
+    eoi0 += params.signature_shift
+    crt0 = np.ones_like(eoi0, dtype=float)
+    sigest0 = utl.scm(signal=signal.y,
+                     length=params.signature_length,
+                     maxerror=params.max_shift_error,
+                     eoi=eoi0,
+                     weights=crt0,)
     # initial iteration
-    iter = irfs_iteration(params, signal, eot0, crt0)
+    iter = irfs_iteration(params, signal, sigest0, crt0)
     yield iter
 
-    normthr = iter.threshold/np.linalg.norm(iter.sigest)
+    normthr = iter.threshold/np.linalg.norm(sigest0)
 
     # subsequent iterations
-    i = 0
-    while (i:=i+1):
-        if len(iter.eot)==0:
+    while True:
+        if len(iter.eoi)==0:
             break
-        iter = irfs_iteration(params, signal, iter.eot, iter.certainty,
-                              normthr=normthr)
+        sigest = utl.estimate_signature(signal=signal,
+                                        length=params.signature_length,
+                                        indices=iter.eoi,
+                                        weights=iter.certainty,)
+        iter = irfs_iteration(params, signal, sigest, iter.certainty,
+                              normthr,)
         yield iter
 
 
@@ -267,8 +265,8 @@ def enedetloc(data: sig.Signal,
     cmp = sig.Comparison.from_comparator(stat,
                                          threshold,
                                          hysteresis*threshold)
-    spos = np.asarray(sig.energy_detector_location_estimates(cmp))
-    return spos
+    eoi = sig.energy_detector_location_estimates(cmp)
+    return eoi
 
 
 def peak_detection(data: sig.Signal, ordc: float):
