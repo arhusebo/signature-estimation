@@ -7,7 +7,7 @@ import scipy.signal
 import scipy.stats
 import faultevent.event as evt
 import faultevent.signal as sig
-from faultevent.signal import Detector, AnalyticMatchedFilterDetector
+from faultevent.signal import Detector, MatchedFilterMaximumDetector
 from faultevent import util as utl
 
 
@@ -21,7 +21,7 @@ class IRFSParams:
     threshold_trials: int = 10
     ed_window: int = 50
     hyst_ed: float = 0.8
-    hyst_mf: float = 0.1
+    hyst_mf: float = 0.9
 
 
 @dataclass
@@ -36,56 +36,6 @@ class IRFSIteration:
     threshold: float | None
 
 
-def irfs_iteration(params: IRFSParams,
-                   signal: sig.Signal,
-                   sigest: npt.ArrayLike,
-                   certainty: npt.ArrayLike,
-                   normthr: float | None = None) -> IRFSIteration:
-    """Perform one iteration of IRFS"""
-
-    det = AnalyticMatchedFilterDetector(sigest)
-    stat = det.statistic(signal)
-    stat_env = sig.Signal(abs(stat.y), stat.x)
-    stat_real = sig.Signal(stat.y.real, stat.x)
-
-    if normthr is None:
-        thr, _ = utl.best_threshold(stat_env, [(params.fmin, params.fmax)],
-                                    n=params.threshold_trials,
-                                    hysteresis=params.hyst_mf)
-    else:
-        thr = normthr*np.linalg.norm(sigest)
-
-    # Perform the comparison using the detector statistic envelope,
-    # but copy the results into a new comparison that uses the detector
-    # statistic real component as data, from where the EOIs are estimated.
-    cmp_env = sig.Comparison.from_comparator(stat_env, thr, hysteresis=0.2*thr)
-    cmp = sig.Comparison(
-        data=stat_real,
-        state=cmp_env.state,
-        regions=cmp_env.regions,
-        threshold=cmp_env.threshold,
-        hysteresis=cmp_env.hysteresis,
-        empty=cmp_env.empty,)
-    eoi_new = sig.matched_filter_location_estimates(cmp)
-    eot_new = cmp.data.x[eoi_new]
-    freq, _ = evt.find_order(eot_new, params.fmin, params.fmax)
-    mu, kappa = evt.fit_vonmises(freq, eot_new)
-    z = evt.map_circle(freq, eot_new)
-    crt_new = scipy.stats.vonmises.pdf(z, kappa, loc=mu)
-
-
-    return IRFSIteration(
-        sigest=sigest,
-        eoi=eoi_new,
-        eot=eot_new,
-        certainty=crt_new,
-        freq=freq,
-        mu=mu,
-        kappa=kappa,
-        threshold=thr,
-    )
-
-
 def irfs(params: IRFSParams,
          signal: sig.Signal,
          ) -> Generator[IRFSIteration, None, None]:
@@ -97,35 +47,87 @@ def irfs(params: IRFSParams,
                      search_intervals=[(params.fmin, params.fmax)],
                      enedetsize=params.ed_window,
                      hysteresis=params.hyst_ed)
+    
+    det0 = sig.EnergyDetector(params.ed_window)
+    stat0 = det0.statistic(signal)
+    thr0, _ = utl.best_threshold(data=stat0,
+                                 search_intervals=[(params.fmin, params.fmax)],
+                                 hysteresis=params.hyst_ed,
+                                 dettype="ed",
+                                 n=params.threshold_trials)
+    cmp0 = sig.Comparison.from_comparator(stat0, thr0, thr0*params.hyst_ed)
+
+    eoi0 = sig.energy_detector_location_estimates(cmp0) + params.signature_shift
+    eot0 = stat0.x[eoi0]
 
     if len(eoi0)==0:
         raise ValueError("energy detector did not detect any events")
 
-    # adjust for shift
-    eoi0 += params.signature_shift
-    crt0 = np.ones_like(eoi0, dtype=float)
+    freq0, _ = evt.find_order(eot0, params.fmin, params.fmax)
+    mu0, kappa0 = evt.fit_vonmises(freq0, eot0)
+    z0 = evt.map_circle(freq0, eot0)
+    crt0 = scipy.stats.vonmises.pdf(z0, kappa0, loc=mu0)
+
     sigest0 = utl.scm(signal=signal.y,
                      length=params.signature_length,
                      maxerror=params.max_shift_error,
                      eoi=eoi0,
                      weights=crt0,)
-    # initial iteration
-    iter = irfs_iteration(params, signal, sigest0, crt0)
-    yield iter
+    # TODO: Correct the EOIs?
 
-    normthr = iter.threshold/np.linalg.norm(sigest0)
+    yield IRFSIteration(sigest=sigest0,
+                        eoi=eoi0,
+                        eot=eot0,
+                        certainty=crt0,
+                        freq=freq0,
+                        mu=mu0,
+                        kappa=kappa0,
+                        threshold=thr0,)
+
+    normthr = None
 
     # subsequent iterations
+    sigest = sigest0
     while True:
-        if len(iter.eoi)==0:
+        det = MatchedFilterMaximumDetector(sigest)
+        stat = det.statistic(signal)
+
+        if normthr is None:
+            thr, _ = utl.best_threshold(stat, [(params.fmin, params.fmax)],
+                                        n=params.threshold_trials,
+                                        hysteresis=params.hyst_mf,
+                                        thresholds=np.linspace(np.min(stat.y), np.max(stat.y), params.threshold_trials))
+            normthr = thr/np.linalg.norm(sigest)
+        else:
+            thr = normthr*np.linalg.norm(sigest)
+
+        cmp = sig.Comparison.from_comparator(stat, thr, hysteresis=thr*params.hyst_mf)
+        eoi = sig.matched_filter_location_estimates(cmp)+params.signature_length # TODO: Why we need to add signature length?
+        if len(eoi)==0:
             break
-        sigest = utl.estimate_signature(signal=signal,
-                                        length=params.signature_length,
-                                        indices=iter.eoi,
-                                        weights=iter.certainty,)
-        iter = irfs_iteration(params, signal, sigest, iter.certainty,
-                              normthr,)
-        yield iter
+        #eot = cmp.data.x[eoi]
+        eot = stat.x[eoi]
+        freq, _ = evt.find_order(eot, params.fmin, params.fmax)
+        mu, kappa = evt.fit_vonmises(freq, eot)
+        z = evt.map_circle(freq, eot)
+        crt = scipy.stats.vonmises.pdf(z, kappa, loc=mu)
+        sigest = utl.estimate_signature(
+                signal=signal,
+                length=params.signature_length,
+                indices=eoi,
+                weights=crt,)
+        
+        yield IRFSIteration(
+            sigest=sigest,
+            eoi=eoi,
+            eot=eot,
+            certainty=crt,
+            freq=freq,
+            mu=mu,
+            kappa=kappa,
+            threshold=thr,
+        )
+
 
 
 class DiagnosedFault(TypedDict):

@@ -84,14 +84,14 @@ def benchmark(vibdata: VibrationData,
     # IRFS method
     irfs = algorithms.irfs(irfs_params, resid_ml)
     for i, irfs_result in enumerate(irfs):
-        if i >= 10: break
+        if i >= 4: break
 
     # check if irfs succeeded before trying to estimate final signature
-    if len(irfs_result.eot)>0:
+    if len(irfs_result.eoi)>0:
         sigest_irfs = estimate_signature(
-            data=vib,
+            signal=vib,
             length=sigestlen,
-            indices=vib.idx_closest(irfs_result.eot)+sigestshift,
+            indices=irfs_result.eoi+sigestshift,
             weights=irfs_result.certainty)
     else:
         sigest_irfs = np.zeros((sigestlen,), dtype=float)
@@ -103,32 +103,32 @@ def benchmark(vibdata: VibrationData,
     medout = algorithms.med_filter(vib, medfiltsize, "impulse")
     medenv = abs(scipy.signal.hilbert(medout.y))
     medpeaks, _ = scipy.signal.find_peaks(medenv, distance=avg_event_period/2)
-    sigest_med = estimate_signature(data=vib, length=sigestlen, indices=medpeaks+sigestshift)
+    sigest_med = estimate_signature(signal=vib, length=sigestlen, indices=medpeaks+sigestshift)
     
     # estimate signature using SK and peak detection
     skout = algorithms.skfilt(vib)
     skenv = abs(skout.y)
     skpeaks, _ = scipy.signal.find_peaks(skenv, distance=avg_event_period/2)
-    sigest_sk = estimate_signature(data=vib, length=sigestlen, indices=skpeaks+sigestshift)
+    sigest_sk = estimate_signature(signal=vib, length=sigestlen, indices=skpeaks+sigestshift)
 
     # estimate signature using AR-MED and peak detection
     armedout = algorithms.med_filter(resid_ar, medfiltsize, "impulse")
     armedenv = abs(scipy.signal.hilbert(armedout.y))
     armedpeaks, _ = scipy.signal.find_peaks(armedenv, distance=avg_event_period/2)
-    sigest_armed = estimate_signature(data=vib, length=sigestlen, indices=armedpeaks+sigestshift)
+    sigest_armed = estimate_signature(signal=vib, length=sigestlen, indices=armedpeaks+sigestshift)
     
     # estimate signature using AR-SK and peak detection
     arskout = algorithms.skfilt(resid_ar)
     arskenv = abs(arskout.y)
     arskpeaks, _ = scipy.signal.find_peaks(arskenv, distance=avg_event_period/2)
-    sigest_arsk = estimate_signature(data=vib, length=sigestlen, indices=arskpeaks+sigestshift)
+    sigest_arsk = estimate_signature(signal=vib, length=sigestlen, indices=arskpeaks+sigestshift)
     
     # Compound method from
     # https://www.papers.phmsociety.org/index.php/phmconf/article/download/3522/phmc_23_3522
     cmout = algorithms.skfilt(armedout)
     cmenv = abs(cmout.y)
     cmpeaks, _ = scipy.signal.find_peaks(cmenv, distance=avg_event_period/2)
-    sigest_cm = estimate_signature(data=vib, length=sigestlen, indices=cmpeaks+sigestshift)
+    sigest_cm = estimate_signature(signal=vib, length=sigestlen, indices=cmpeaks+sigestshift)
 
     results = [MethodResult("irfs", sigest_irfs, irfs_result.eot),
                MethodResult("med", sigest_med, medout.x[medpeaks]),
@@ -239,7 +239,8 @@ def snr_experiment(seed: int,
     irfs_params = algorithms.IRFSParams(fmin=ordf-0.5, fmax=ordf+0.5,
                                         signature_length=200,
                                         signature_shift=-20,
-                                        hyst_ed=0.8)
+                                        hyst_ed=0.8,
+                                        hyst_mf=0.9)
 
     vibdata = generate_vibration(desc, seed=seed)
     benchmark_results = benchmark(vibdata, irfs_params) 
@@ -277,7 +278,7 @@ def ex_snr(status: ExperimentStatus):
     conf = {
         "snr": np.logspace(-3, 0, 10).tolist(),
         "dataname": [data.DataName.UNSW,],
-        "anomalous": [0, 10,],
+        "anomalous": [0, 100,],
         "fsize": [20,],
     }
 
@@ -400,7 +401,7 @@ def ex_compare_sigest():
     
 
     seed = 0
-    snr = 0.005
+    snr = 0.01
     dataname = "unsw"
     anomalous = 10
     fsize = 20
@@ -455,10 +456,25 @@ def ex_compare_sigest():
 
 @presentation(ex_compare_sigest)
 def pr_compare_sigest(results: list[MethodResult]):
+    
+    fsize = 20
+    sig_f = 6.5e3
+    sig_tau = 0.001
+    sig_fs = 25.e3
+    sig_t = np.arange(800)
+    stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t/sig_fs)
+    impres = data.synth.signt_impres(sig_f, sig_tau, sig_t/sig_fs)
+    signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
 
-    fig, ax = plt.subplots(len(results), 1, sharex=True)
+    fig, ax = plt.subplots(1+len(results), 1, sharex=True)
+    ax[0].plot(signature)
+    ax[0].set_ylabel("True")
     for i, method in enumerate(results):
-        ax[i].plot(method.sigest)
-        ax[i].set_ylabel(method.name)
+        idx0 = np.argmax(np.correlate(method.sigest, stpres, mode="full"))
+        idx1 = np.argmax(np.correlate(method.sigest, impres, mode="full"))
+        ax[i+1].plot(method.sigest)
+        ax[i+1].axvline(idx0)
+        ax[i+1].axvline(idx1)
+        ax[i+1].set_ylabel(method.name)
     
     plt.show()

@@ -465,6 +465,6 @@ def present_uia_stacked(results: list[Benchmark]):
 
 @presentation(unsw)
 def present_unsw_stacked(results: list[Benchmark]):
-    benchmark = select_benchmarks(results, include_idx=[11])[0]
+    benchmark = select_benchmarks(results, include_idx=[26])[0]
     present_stacked_signatures(benchmark=benchmark, dataname=data.DataName.UNSW,
                                idx_eosp=range(4), rpm=360, fs=51200)
