@@ -24,6 +24,8 @@ output_path = "results/data"
 
 MAX_WORKERS = load_config().get("max_workers", None)
 
+IRFS_PEAK_DETECTION = False
+
 def detect_and_sort(filt: sig.Signal, ordc, ordmin, ordmax, weightfunc=None, maxevents=10000):
     """Detects events using peak detection and sorts them by peak height.
     Returns 'number of detections' in ascending order and the respective
@@ -113,23 +115,31 @@ def benchmark_experiment(dataname: data.DataName, signal_id: str,
     # IRFS method.
     irfs = algorithms.irfs(params.irfs, resid_ml)
     for i, irfs_result in enumerate(irfs):
-        if i >= 10: break
+        if i >= 3: break
 
     irfs_sigest = utl.estimate_signature(signal, params.siglen,
-                                         x=irfs_result.eot,
+                                         indices=irfs_result.eoi,
                                          weights=irfs_result.certainty,)
 
-    # TODO: See if we can use the EOSPs output by `algorithms.irfs` directly
-    # in `detect_and_sort` instead of what we do in the following lines
-    irfs_out = np.correlate(resid_ml.y, irfs_result.sigest, mode="valid")
-    irfs_filt = sig.Signal(irfs_out, resid_ml.x[:-len(irfs_result.sigest)+1],
-                           resid_ml.uniform_samples)
-    def irfs_weight(spos):
-        z = evt.map_circle(irfs_result.freq, spos)
-        u = scipy.stats.vonmises.pdf(z, irfs_result.kappa, loc=irfs_result.mu)
-        return u
-    
-    irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, params.ordc, ordmin, ordmax, weightfunc=irfs_weight)
+    if IRFS_PEAK_DETECTION:
+        # Use peak-detection method for IRFS
+        irfs_out = np.correlate(resid_ml.y, irfs_result.sigest, mode="valid")
+        irfs_filt = sig.Signal(irfs_out, resid_ml.x[:-len(irfs_result.sigest)+1],
+                               resid_ml.uniform_samples)
+        def irfs_weight(spos):
+            z = evt.map_circle(irfs_result.freq, spos)
+            u = scipy.stats.vonmises.pdf(z, irfs_result.kappa, loc=irfs_result.mu)
+            return u
+        
+        irfs_ndets, irfs_mags = detect_and_sort(irfs_filt, params.ordc, ordmin, ordmax, weightfunc=irfs_weight)
+
+    else:
+        # Use IRFS output directly
+        irfs_ndets = np.arange(len(irfs_result.eot))+1
+        idx_sorted = np.argsort(irfs_result.certainty)[::-1]
+        irfs_mags = np.zeros_like(irfs_ndets, dtype=float)
+        for i, _ in enumerate(irfs_ndets):
+            irfs_mags[i] = abs(evt.event_spectrum(irfs_result.freq, irfs_result.eot[idx_sorted][:i+1]))
     
     # MED method. Signal is filtered using filter obtained by MED.
     med_filt = algorithms.med_filter(signal, params.med_filtsize, "impulse")
@@ -218,10 +228,11 @@ def uia() -> list[Benchmark]:
     ordc = 6.7087166
     siglen = 200
     sigshift = -20
-    irfs_params = algorithms.IRFSParams(fmin=ordc-0.5, fmax=ordc+0.5,
+    irfs_params = algorithms.IRFSParams(fmin=ordc-0.1, fmax=ordc+0.1,
                                         signature_length=siglen,
                                         signature_shift=sigshift,
-                                        hyst_ed=0.8)
+                                        hyst_ed=0.8,
+                                        hyst_mf=0.9)
     benchmark_params = BenchmarkParams(rpm=1000,
                                        siglen=siglen,
                                        sigshift=sigshift,
@@ -283,7 +294,7 @@ def cwru() -> list[Benchmark]:
                 continue
 
         siglen = 400
-        sigshift = -150
+        sigshift = 0#-150
         irfs_params = algorithms.IRFSParams(fmin=ordc-0.5, fmax=ordc+0.5,
                                             signature_length=siglen,
                                             signature_shift=sigshift,
@@ -338,15 +349,19 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
     nrows = len(results_to_show)
 
     matplotlib.rcParams.update({"font.size": 6})
-    fig, ax = plt.subplots(nrows=nrows, ncols=2, sharey=False, sharex='col',
+    fig, ax = plt.subplots(nrows=nrows, ncols=2, sharey=False,# sharex='col',
                            gridspec_kw={"width_ratios":[3, 2]},
                            figsize=(3.5, 2.5))
     for i, (idx, results) in enumerate(zip(include_idx, results_to_show)):
 
         for method_output in results["method_outputs"]:
             frac = method_output["magnitudes"]/method_output["detections"]
-            ax[i][0].plot(method_output["detections"], frac, label=method_output["name"])
-        ax[i][0].axvline(results["events_max"], label="Max events", ls="--", c="k")
+            ax[i][0].plot(method_output["detections"], frac, label=method_output["name"],
+                          lw=0.5)
+        #ax[i][0].axvline(results["events_max"], label="Max events", ls=":", c="grey")
+        irfs_res = next(filter(lambda mo: mo["name"]=="IRFS",
+                        results["method_outputs"]))
+        #ax[i][0].axvline(len(irfs_res["detections"]), label="IRFS detections", ls="--", c="k")
         if i == nrows-1:
             ax[i][0].set_xlabel("Detections")
         
@@ -356,6 +371,7 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
         if show_names:
             ax[i][0].set_title(f'{results["signal_id"]} ({idx})')
 
+        ax[i][0].set_xlim(0, len(irfs_res["detections"]))
         ax[i, 0].grid(which="both")
 
         sigest = results["irfs"]["sigest"]
@@ -384,8 +400,11 @@ def present_uia_all(results: list[Benchmark]):
 
 @presentation(unsw)
 def present_unsw(results: list[Benchmark]):
-    indices = [26, 56, 58]
-    present_benchmarks(results, include_idx=indices, dx=1/51200)
+    from itertools import batched
+    #indices = [26, 56, 58]
+    indices = [4, 23, 34, 48, 56, 58, 59, 63, 76]
+    for ids in batched(indices, 3):
+        present_benchmarks(results, include_idx=ids, dx=1/51200)
 
 @presentation(unsw)
 def present_unsw_all(results: list[Benchmark]):
@@ -395,7 +414,8 @@ def present_unsw_all(results: list[Benchmark]):
 
 @presentation(cwru)
 def present_cwru(results: list[Benchmark]):
-    present_benchmarks(results, include_idx=[5, 6, 7], dx=1/48000)
+    indices = [5, 7, 10]
+    present_benchmarks(results, include_idx=indices, dx=1/48000)
 
 @presentation(cwru)
 def present_cwru_all(results: list[Benchmark]):

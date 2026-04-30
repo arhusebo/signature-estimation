@@ -57,7 +57,7 @@ def irfs(params: IRFSParams,
                                  n=params.threshold_trials)
     cmp0 = sig.Comparison.from_comparator(stat0, thr0, thr0*params.hyst_ed)
 
-    eoi0 = sig.energy_detector_location_estimates(cmp0) + params.signature_shift
+    eoi0 = sig.energy_detector_location_estimates(cmp0)# + params.signature_shift
     eot0 = stat0.x[eoi0]
 
     if len(eoi0)==0:
@@ -71,7 +71,7 @@ def irfs(params: IRFSParams,
     sigest0 = utl.scm(signal=signal.y,
                      length=params.signature_length,
                      maxerror=params.max_shift_error,
-                     eoi=eoi0,
+                     eoi=eoi0+params.signature_shift,
                      weights=crt0,)
     # TODO: Correct the EOIs?
 
@@ -89,7 +89,7 @@ def irfs(params: IRFSParams,
     # subsequent iterations
     sigest = sigest0
     while True:
-        det = MatchedFilterMaximumDetector(sigest)
+        det = MatchedFilterMaximumDetector(sigest, len(sigest))
         stat = det.statistic(signal)
 
         if normthr is None:
@@ -102,7 +102,7 @@ def irfs(params: IRFSParams,
             thr = normthr*np.linalg.norm(sigest)
 
         cmp = sig.Comparison.from_comparator(stat, thr, hysteresis=thr*params.hyst_mf)
-        eoi = sig.matched_filter_location_estimates(cmp)+params.signature_length # TODO: Why we need to add signature length?
+        eoi = sig.matched_filter_location_estimates(cmp)#+params.signature_length # TODO: Why we need to add signature length?
         if len(eoi)==0:
             break
         #eot = cmp.data.x[eoi]
@@ -114,7 +114,7 @@ def irfs(params: IRFSParams,
         sigest = utl.estimate_signature(
                 signal=signal,
                 length=params.signature_length,
-                indices=eoi,
+                indices=eoi+params.signature_length,
                 weights=crt,)
         
         yield IRFSIteration(

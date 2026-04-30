@@ -104,6 +104,8 @@ def sequence_augmentation(signal, snr: float):
     Therefore, the signal should be augmented by white noise,
     occurring in pulses at random points in time.
     """
+    if snr<=0.0:
+        raise ValueError("snr must be greater than zero")
     pulse_length = 400
     sigt = np.arange(pulse_length)
 
@@ -113,6 +115,7 @@ def sequence_augmentation(signal, snr: float):
     # pow(signal) = snr * pow(noise)
     # std(signal) = sqrt[snr*pow(noise)]
     std_tilde = np.sqrt(snr*np.var(signal))
+    assert std_tilde>0.0
 
     idx = 0
     while idx <= len(signal):
@@ -121,6 +124,8 @@ def sequence_augmentation(signal, snr: float):
             break
         idx1 = min(idx0 + pulse_length, len(signal))
         pulse_length_actual = idx1 - idx0
+        if pulse_length_actual == 0:
+            break # at this point, `idx` must be at the end of the signal
         #signature = np.random.randn(pulse_length_actual)*std_tilde
 
         signature = data.synth.signt_res(
@@ -129,8 +134,10 @@ def sequence_augmentation(signal, snr: float):
                 d=np.random.randint(5, 30),
                 t=sigt[:pulse_length_actual],
                 fs=25.e3,)
+        std_signature = np.std(signature)
+        assert std_signature>0.0
                 
-        tilde[idx0:idx1] = signature/np.std(signature)*std_tilde
+        tilde[idx0:idx1] = signature/std_signature*std_tilde # raised RuntimeWarning: invalid value encountered in divide
         idx = idx1
 
     return signal+tilde
