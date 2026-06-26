@@ -102,32 +102,32 @@ def benchmark(vibdata: VibrationData,
     # estimate signature using MED and peak detection
     medout = algorithms.med_filter(vib, medfiltsize, "impulse")
     medenv = abs(scipy.signal.hilbert(medout.y))
-    medpeaks, _ = scipy.signal.find_peaks(medenv, distance=avg_event_period/2)
+    medpeaks, _ = scipy.signal.find_peaks(medenv, height=np.std(medout.y)*3.0, distance=avg_event_period/2)
     sigest_med = estimate_signature(signal=vib, length=sigestlen, indices=medpeaks+sigestshift)
     
     # estimate signature using SK and peak detection
-    skout = algorithms.skfilt(vib)
+    skout = algorithms.skfilt(vib, nperseg=250)
     skenv = abs(skout.y)
-    skpeaks, _ = scipy.signal.find_peaks(skenv, distance=avg_event_period/2)
+    skpeaks, _ = scipy.signal.find_peaks(skenv, height=np.std(skout.y)*3.0, distance=avg_event_period/2)
     sigest_sk = estimate_signature(signal=vib, length=sigestlen, indices=skpeaks+sigestshift)
 
     # estimate signature using AR-MED and peak detection
     armedout = algorithms.med_filter(resid_ar, medfiltsize, "impulse")
     armedenv = abs(scipy.signal.hilbert(armedout.y))
-    armedpeaks, _ = scipy.signal.find_peaks(armedenv, distance=avg_event_period/2)
+    armedpeaks, _ = scipy.signal.find_peaks(armedenv, height=np.std(armedout.y)*3.0, distance=avg_event_period/2)
     sigest_armed = estimate_signature(signal=vib, length=sigestlen, indices=armedpeaks+sigestshift)
     
     # estimate signature using AR-SK and peak detection
-    arskout = algorithms.skfilt(resid_ar)
+    arskout = algorithms.skfilt(resid_ar, nperseg=250)
     arskenv = abs(arskout.y)
-    arskpeaks, _ = scipy.signal.find_peaks(arskenv, distance=avg_event_period/2)
+    arskpeaks, _ = scipy.signal.find_peaks(arskenv, height=np.std(arskout.y)*3.0, distance=avg_event_period/2)
     sigest_arsk = estimate_signature(signal=vib, length=sigestlen, indices=arskpeaks+sigestshift)
     
     # Compound method from
     # https://www.papers.phmsociety.org/index.php/phmconf/article/download/3522/phmc_23_3522
-    cmout = algorithms.skfilt(armedout)
+    cmout = algorithms.skfilt(armedout, nperseg=250)
     cmenv = abs(cmout.y)
-    cmpeaks, _ = scipy.signal.find_peaks(cmenv, distance=avg_event_period/2)
+    cmpeaks, _ = scipy.signal.find_peaks(cmenv, height=np.std(cmout.y)*3.0, distance=avg_event_period/2)
     sigest_cm = estimate_signature(signal=vib, length=sigestlen, indices=cmpeaks+sigestshift)
 
     results = [MethodResult("irfs", sigest_irfs, irfs_result.eot),
@@ -240,7 +240,7 @@ def snr_experiment(seed: int,
                                         signature_length=200,
                                         signature_shift=-20,
                                         hyst_ed=0.8,
-                                        hyst_mf=0.9)
+                                        hyst_mf=0.05)
 
     vibdata = generate_vibration(desc, seed=seed)
     benchmark_results = benchmark(vibdata, irfs_params) 
@@ -276,7 +276,7 @@ def ex_snr(status: ExperimentStatus):
     """Monte-carlo simulation of signature NMSE for varying SNR"""
 
     conf = {
-        "snr": np.logspace(-3, 0, 10).tolist(),
+        "snr": np.logspace(-2, -1, 10).tolist(),
         "dataname": [data.DataName.UNSW,],
         "anomalous": [0, 100,],
         "fsize": [20,],

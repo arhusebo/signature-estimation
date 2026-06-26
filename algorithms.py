@@ -7,7 +7,7 @@ import scipy.signal
 import scipy.stats
 import faultevent.event as evt
 import faultevent.signal as sig
-from faultevent.signal import Detector, MatchedFilterMaximumDetector
+from faultevent.signal import Detector, AnalyticMatchedFilterDetector
 from faultevent import util as utl
 
 
@@ -21,7 +21,7 @@ class IRFSParams:
     threshold_trials: int = 10
     ed_window: int = 50
     hyst_ed: float = 0.8
-    hyst_mf: float = 0.9
+    hyst_mf: float = 0.2
 
 
 @dataclass
@@ -89,19 +89,28 @@ def irfs(params: IRFSParams,
     # subsequent iterations
     sigest = sigest0
     while True:
-        det = MatchedFilterMaximumDetector(sigest, len(sigest))
+        det = AnalyticMatchedFilterDetector(sigest)
         stat = det.statistic(signal)
+        stat_env = sig.Signal(abs(stat.y), stat.x, uniform_samples=stat.uniform_samples)
+        stat_real = sig.Signal(stat.y.real, stat.x, uniform_samples=stat.uniform_samples)
 
         if normthr is None:
             thr, _ = utl.best_threshold(stat, [(params.fmin, params.fmax)],
                                         n=params.threshold_trials,
                                         hysteresis=params.hyst_mf,
-                                        thresholds=np.linspace(np.min(stat.y), np.max(stat.y), params.threshold_trials))
+                                        thresholds=np.linspace(np.min(stat_env.y), np.max(stat_env.y), params.threshold_trials))
             normthr = thr/np.linalg.norm(sigest)
         else:
             thr = normthr*np.linalg.norm(sigest)
 
-        cmp = sig.Comparison.from_comparator(stat, thr, hysteresis=thr*params.hyst_mf)
+        cmp_env = sig.Comparison.from_comparator(stat_env, thr, hysteresis=thr*params.hyst_mf)
+        cmp = sig.Comparison(
+                data=stat_real,
+                state=cmp_env.state,
+                regions=cmp_env.regions,
+                threshold=cmp_env.threshold,
+                hysteresis=cmp_env.hysteresis,
+                empty=cmp_env.empty,)
         eoi = sig.matched_filter_location_estimates(cmp)#+params.signature_length # TODO: Why we need to add signature length?
         if len(eoi)==0:
             break
@@ -114,7 +123,7 @@ def irfs(params: IRFSParams,
         sigest = utl.estimate_signature(
                 signal=signal,
                 length=params.signature_length,
-                indices=eoi+params.signature_length,
+                indices=eoi,#+params.signature_length,
                 weights=crt,)
         
         yield IRFSIteration(
