@@ -356,8 +356,8 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
 
         for method_output in results["method_outputs"]:
             frac = method_output["magnitudes"]/method_output["detections"]
-            ax[i][0].plot(method_output["detections"], frac, label=method_output["name"],
-                          lw=0.5)
+            ax[i][0].plot(method_output["detections"], frac, label=method_output["name"],)
+                          #lw=0.5)
         #ax[i][0].axvline(results["events_max"], label="Max events", ls=":", c="grey")
         irfs_res = next(filter(lambda mo: mo["name"]=="IRFS",
                         results["method_outputs"]))
@@ -376,11 +376,10 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
 
         sigest = results["irfs"]["sigest"]
         x = np.arange(len(sigest))*dx
-        ax[i, 1].plot(x, sigest, c="k", lw=0.5)
+        ax[i, 1].plot(x, sigest, c="k")#, lw=0.5)
         ax[i][1].set_ylabel("Signature\nestimate")
         ax[i][1].set_yticks([])
         ax[-1][1].set_xlabel("Time [s]")
-        # ax[0][1].set_xticks([])
 
     h, l = ax[0][0].get_legend_handles_labels()
     plt.figlegend(h, l, ncols=4, loc="upper center")
@@ -401,8 +400,7 @@ def present_uia_all(results: list[Benchmark]):
 @presentation(unsw)
 def present_unsw(results: list[Benchmark]):
     from itertools import batched
-    #indices = [26, 56, 58]
-    indices = [4, 23, 34, 48, 56, 58, 59, 63, 76]
+    indices = [10, 56, 63]
     for ids in batched(indices, 3):
         present_benchmarks(results, include_idx=ids, dx=1/51200)
 

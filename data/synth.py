@@ -102,12 +102,13 @@ class VibrationData:
 
 
 
-def generate_vibration(desc: VibrationDescriptor, seed=0) -> VibrationData:
+def generate_vibration(desc: VibrationDescriptor, seed=0, rng=None) -> VibrationData:
     """Generates a residual signal according to the provided
     ResidualDescriptor. Always generates the same result unless a
     different value of 'seed' is used.
     """
-    rng = np.random.default_rng(seed)
+    if rng is None:
+        rng = np.random.default_rng(seed)
 
     # Noise (healthy) component
     # A random slice is extracted from the signal `signal_id` of dataset

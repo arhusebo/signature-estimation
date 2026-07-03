@@ -196,12 +196,15 @@ def snr_experiment(seed: int,
                    snr: float,
                    dataname: data.DataName,
                    anomalous: int,
-                   fsize: int):
+                   fsize_interval: tuple[int, int],):
     """General SNR experiment. This function is called by monte-carlo
     experiments using multiprocessing and therefore needs to be defined
     on module-level."""
     ordf = 5.0
     fs = 51200
+
+    rng = np.random.default_rng(seed)
+    fsize = rng.integers(*fsize_interval)
     
     sig_f = 6.5e3
     sig_tau = 0.001
@@ -242,7 +245,7 @@ def snr_experiment(seed: int,
                                         hyst_ed=0.8,
                                         hyst_mf=0.05)
 
-    vibdata = generate_vibration(desc, seed=seed)
+    vibdata = generate_vibration(desc, rng=rng)
     benchmark_results = benchmark(vibdata, irfs_params) 
 
     # nmse
@@ -276,10 +279,10 @@ def ex_snr(status: ExperimentStatus):
     """Monte-carlo simulation of signature NMSE for varying SNR"""
 
     conf = {
-        "snr": np.logspace(-2, -1, 10).tolist(),
+        "snr": np.logspace(-2, 0, 10).tolist(),
         "dataname": [data.DataName.UNSW,],
         "anomalous": [0, 100,],
-        "fsize": [20,],
+        "fsize_interval": [(10, 40)],
     }
 
     conf_list = list(dict(zip(conf.keys(), x)) for x in itertools.product(*conf.values()))
@@ -330,13 +333,13 @@ def pr_nmse(results):
         rmse = np.array([x["nmse"] for x in filtres])
         snr_db = 10*np.log10(snr)
         for j in range(rmse.shape[-1]):
-            ax[i].plot(snr, rmse[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
+            ax[i].plot(snr_db, rmse[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
         ax[i].set_ylabel(f"NMSE\n{ylabels[i]}")
         ax[i].grid()
         ax[i].set_yticks([0.0, 0.5, 1.0])
-        ax[i].set_xscale("log")
+        #ax[i].set_xscale("log")
 
-        ax[-1].set_xlabel("SNR")
+        ax[-1].set_xlabel("SNR [dB]")
         ax[0].legend(legend, ncol=len(legend)//2, loc="upper center",
                     bbox_to_anchor=(0.5, 1.3))
     
@@ -356,12 +359,13 @@ def pr_fsize(results):
     filtres = list(filter(results_predicate("unsw", True), results))
     snr = [r["conf"]["snr"] for r in filtres]
     err = np.array([r["fse_error"] for r in filtres])
+    snr_db = 10*np.log10(snr)
     for j in range(err.shape[-1]):
-        ax.plot(snr, err[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
+        ax.plot(snr_db, err[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
     ax.grid()
         
-    ax.set_xlabel("SNR")
-    ax.set_xscale("log")
+    ax.set_xlabel("SNR [dB]")
+    #ax.set_xscale("log")
     ax.set_ylabel("Fault size error (samples)")
     ax.legend(legend, ncol=len(legend)//2, loc="upper center",
               bbox_to_anchor=(0.5, 1.3))
@@ -383,13 +387,15 @@ def pr_eosp(results):
     filtres = list(filter(results_predicate("unsw", False), results))
     snr = [r["conf"]["snr"] for r in filtres]
     err = np.array([r["eosp_error"] for r in filtres])
+    snr_db = 10*np.log10(snr)
     for j in range(err.shape[-1]):
-        ax.plot(snr, err[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
-    ax.set_xlabel("SNR")
-    ax.set_ylabel("EOT error\n(s)")
+        ax.plot(snr_db, err[:,j], marker=markers[j], c=cmap(cmap_idx[j]))
+    ax.set_xlabel("SNR [dB]")
+    ax.set_ylabel("EOT error\n[s]")
     ax.grid()
-    ax.set_xscale("log")
+    #ax.set_xscale("log")
     #ax.set_yticks([0.0, 0.02, 0.04, 0.06])
+    ax.set_ylim(0, 10*np.max(err[:,0]))
     plt.legend(legend, ncol=len(legend)//2, loc="upper center",
                bbox_to_anchor=(0.5, 1.3))
     plt.tight_layout(pad=0.0)
