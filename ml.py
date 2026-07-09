@@ -97,25 +97,25 @@ class Model(torch.nn.Module):
         return model
 
 
-def sequence_augmentation(signal, snr: float):
+def sequence_augmentation(signal, snr_range: tuple[float, float] = (0.01, 1.0)):
     """We want to make the model agnostic to
-        1. any specific fault frequency, and
-        2. any specific signature waveform.
-    Therefore, the signal should be augmented by white noise,
-    occurring in pulses at random points in time.
+        1. any specific fault frequency,
+        2. any specific signature waveform, and
+        3. any specific fault strength (SNR).
+    Therefore, the signal is augmented by parametric fault-like pulses at
+    random points in time, each injected at an SNR drawn log-uniformly from
+    `snr_range`. Covering the full range of SNRs seen at test time (rather
+    than a single high SNR) is what teaches the denoiser to expose *weak*
+    faults instead of absorbing them into its healthy-signal prediction.
     """
-    if snr<=0.0:
+    snr_lo, snr_hi = snr_range
+    if snr_lo <= 0.0:
         raise ValueError("snr must be greater than zero")
     pulse_length = 400
     sigt = np.arange(pulse_length)
 
     tilde = np.zeros_like(signal)
-
-    # snr = pow(signal) / pow(noise)
-    # pow(signal) = snr * pow(noise)
-    # std(signal) = sqrt[snr*pow(noise)]
-    std_tilde = np.sqrt(snr*np.var(signal))
-    assert std_tilde>0.0
+    signal_std = np.std(signal)
 
     idx = 0
     while idx <= len(signal):
@@ -126,7 +126,11 @@ def sequence_augmentation(signal, snr: float):
         pulse_length_actual = idx1 - idx0
         if pulse_length_actual == 0:
             break # at this point, `idx` must be at the end of the signal
-        #signature = np.random.randn(pulse_length_actual)*std_tilde
+
+        # snr = pow(signal) / pow(pulse), drawn log-uniformly per pulse
+        # std(pulse) = sqrt[snr * pow(signal)] = sqrt(snr) * std(signal)
+        snr = np.exp(np.random.uniform(np.log(snr_lo), np.log(snr_hi)))
+        std_tilde = np.sqrt(snr)*signal_std
 
         signature = data.synth.signt_res(
                 f=np.random.randint(5e3, 15e3),
@@ -135,9 +139,13 @@ def sequence_augmentation(signal, snr: float):
                 t=sigt[:pulse_length_actual],
                 fs=25.e3,)
         std_signature = np.std(signature)
-        assert std_signature>0.0
-                
-        tilde[idx0:idx1] = signature/std_signature*std_tilde # raised RuntimeWarning: invalid value encountered in divide
+        if std_signature <= 0.0:
+            # degenerate (e.g. very short) pulse produces a constant signature;
+            # skip it to avoid a divide-by-zero
+            idx = idx1
+            continue
+
+        tilde[idx0:idx1] = signature/std_signature*std_tilde
         idx = idx1
 
     return signal+tilde
@@ -223,7 +231,8 @@ def train(dataset_train: PrepDataset,
         for i, batch in enumerate(train_batches):
             
             #aug_batch = map(partial(augment_sequence, 10.0), batch)
-            aug_batch = np.apply_along_axis(sequence_augmentation, -1, batch, snr=1.0)
+            aug_batch = np.apply_along_axis(sequence_augmentation, -1, batch,
+                                            snr_range=(0.01, 1.0))
             
             # (N, 1, L)
             desired_shape = (batch_size, 1, -1)
@@ -246,7 +255,7 @@ def train(dataset_train: PrepDataset,
             test_batches = gen_batches(dataset_val, len(dataset_val), shuffle=True,)
             batch = next(test_batches)
             model.eval()
-            #aug_batch = np.apply_along_axis(sequence_augmentation, -1, batch, snr=10.0)
+            #aug_batch = np.apply_along_axis(sequence_augmentation, -1, batch, snr_range=(0.01, 1.0))
             desired_shape = (batch_size, 1, -1)
             batch = torch.from_numpy(np.reshape(batch, desired_shape))
             #aug_batch = torch.from_numpy(np.reshape(aug_batch, desired_shape))
