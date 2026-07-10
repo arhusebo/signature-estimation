@@ -33,12 +33,12 @@ from config import load_config
 # --- signal-model parameters (mirror experiments.synth.make_signal_config) ---
 FS = 51200                 # sample frequency
 FSHAFT = 1000 / 60         # shaft frequency
-ORDF = 5.0                 # fault order
 FAULT_STD = 0.01           # event shaft-position jitter
-SIG_F, SIG_TAU, SIG_FS = 6.5e3, 0.001, 25.e3
-SIG_LEN = 800
-FSIZE_INTERVAL = (10, 40)
+FSIZE_INTERVAL = (10, 40)  # fault-size range (passed to draw_signature_params)
 SNR_DB_RANGE = (-30.0, 0.0)
+# The signature-shape parameters (order, resonance frequency, decay, size) and
+# their a-priori uncertainty live in `data.synth.draw_signature_params`, shared
+# with the test generator (experiments.synth.make_signal_config).
 
 
 def model_filepath(dataname: data.DataName) -> pathlib.Path:
@@ -74,26 +74,24 @@ class Denoiser(nn.Module):
 
 
 # --- synthetic training data (in-memory; mirrors generate_vibration) ---------
-def _fault_signature(rng):
-    fsize = rng.integers(*FSIZE_INTERVAL)
-    return synth.signt_res(SIG_F, SIG_TAU, fsize, np.arange(SIG_LEN), fs=SIG_FS)
-
-
 def synth_example(rng, noise_pool, length):
     """Build one (input, target) pair from the same signal model used by
-    `generate_vibration`, with the healthy floor drawn from `noise_pool` and
-    the fault SNR drawn log-uniformly over `SNR_DB_RANGE`. `target` is the
-    non-healthy (signature-train) component."""
+    `generate_vibration`, with the healthy floor drawn from `noise_pool`, the
+    fault-signature parameters drawn from `synth.draw_signature_params` (order,
+    resonance frequency, decay, size) and the SNR log-uniform over
+    `SNR_DB_RANGE`. `target` is the non-healthy (signature-train) component."""
     noise_full = noise_pool[rng.integers(len(noise_pool))]
     idx0 = rng.integers(len(noise_full) - length)
     noise = noise_full[idx0:idx0 + length]
     pow_noise = np.var(noise)
 
-    signature = _fault_signature(rng)
+    p = synth.draw_signature_params(rng, FSIZE_INTERVAL)
+    signature = synth.signt_res(p["f"], p["tau"], p["d"],
+                                np.arange(synth.SIG_LEN), fs=synth.SIG_FS)
     snr = 10.0 ** (rng.uniform(*SNR_DB_RANGE) / 10.0)
 
     eosp_end = length / FS * FSHAFT
-    eosp = np.arange(0, eosp_end, 1 / ORDF)
+    eosp = np.arange(0, eosp_end, 1 / p["ord"])
     eosp = eosp + rng.standard_normal(len(eosp)) * FAULT_STD
     component = synth.signature_train(eosp, signature, length, fs=FS, fshaft=FSHAFT)
     component = np.sqrt(pow_noise * snr) * component / np.std(signature)

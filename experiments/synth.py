@@ -210,23 +210,27 @@ def make_signal_config(rng: np.random.Generator,
                        dataname: data.DataName,
                        anomalous: int,
                        fsize_interval: tuple[int, int]) -> SignalConfig:
-    """Set up the parameters for one synthetic-signal realization: draw a
-    fault size, build the fault/anomaly signatures, the `VibrationDescriptor`
-    and the `IRFSParams`. Factored out of `snr_experiment` so other
-    experiments can reuse the exact same configuration.
+    """Set up the parameters for one synthetic-signal realization: draw the
+    fault-signature parameters (order, resonance frequency, decay, fault size)
+    within the a-priori uncertainty of a fixed bearing, then build the
+    fault/anomaly signatures, the `VibrationDescriptor` and the `IRFSParams`.
+    Factored out of `snr_experiment` so other experiments (and the ml2 training
+    synthesiser, via `data.synth.draw_signature_params`) share the same model.
 
-    The only `rng` draw is the fault size, so calling this and then
-    `generate_vibration(cfg.desc, rng=rng)` reproduces the original
-    experiment's random stream."""
-    ordf = 5.0
+    `draw_signature_params` consumes `rng` before `generate_vibration`, so the
+    result is deterministic given the seed."""
     fs = 51200
 
-    fsize = rng.integers(*fsize_interval)
+    # Realized signature parameters (with slip / modal uncertainty). The
+    # realized order generates the events and scores EOSPs; IRFS still searches
+    # around the *nominal* order (what would be known a priori).
+    params = data.synth.draw_signature_params(rng, fsize_interval)
+    ordf = params["ord"]
+    fsize = params["d"]
 
-    sig_f = 6.5e3
-    sig_tau = 0.001
-    sig_fs = 25.e3
-    sig_t = np.arange(800)
+    sig_f, sig_tau = params["f"], params["tau"]
+    sig_fs = data.synth.SIG_FS
+    sig_t = np.arange(data.synth.SIG_LEN)
     stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t/sig_fs)
     impres = data.synth.signt_impres(sig_f, sig_tau, sig_t/sig_fs)
     signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
@@ -256,7 +260,8 @@ def make_signal_config(rng: np.random.Generator,
         }
     }
 
-    irfs_params = algorithms.IRFSParams(fmin=ordf-0.5, fmax=ordf+0.5,
+    ordf_nominal = data.synth.ORD_NOMINAL
+    irfs_params = algorithms.IRFSParams(fmin=ordf_nominal-0.5, fmax=ordf_nominal+0.5,
                                         signature_length=200,
                                         signature_shift=-20,
                                         hyst_ed=0.8,
@@ -373,8 +378,7 @@ def pr_nmse(results):
         #ax[i].set_xscale("log")
 
         ax[-1].set_xlabel("SNR [dB]")
-        ax[0].legend(legend, ncol=len(legend)//2, loc="upper center",
-                    bbox_to_anchor=(0.5, 1.3))
+        ax[0].legend(legend, ncol=len(legend)//2, loc="upper center")
     
         plt.tight_layout(pad=0.0)
     

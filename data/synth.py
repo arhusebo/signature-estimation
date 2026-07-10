@@ -66,6 +66,37 @@ def DEFAULT_FAULT_SIGNATURE(n, d=30):
     return signt_res(6.5e3, 0.001, d, n, fs=25.e3)
 
 
+# --- fault-signature parameters: nominal values + a-priori uncertainty -------
+# For a fixed bearing the order (from geometry) and the excited-resonance
+# frequency / decay (from a modal characterization of the structure) are known
+# only up to a tolerance, while the fault size is unknown. `draw_signature_params`
+# samples one realization within that tolerance; it is shared by the ml2
+# training synthesiser and the test generator
+# (experiments.synth.make_signal_config), so training and testing draw from the
+# same distribution.
+SIG_FS = 25.e3               # signature internal sampling frequency [Hz]
+SIG_LEN = 800                # signature length [samples]
+ORD_NOMINAL = 5.0            # nominal fault order [events / revolution]
+SIG_F_NOMINAL = 6.5e3        # nominal excited-resonance frequency [Hz]
+SIG_TAU_NOMINAL = 1.0e-3     # nominal resonance decay time constant [s]
+
+ORD_RANGE = (4.5, 5.5)            # 
+SIG_F_RANGE = (4.e3, 8.e3)      # ~+/-15% resonance / modal uncertainty
+SIG_TAU_RANGE = (0.3e-3, 2.e-3)  # damping uncertainty
+
+
+def draw_signature_params(rng, fsize_interval=(10, 40)):
+    """Draw a randomized set of fault-signature parameters within the a-priori
+    uncertainty of a fixed bearing. Returns a dict with keys 'ord' (order), 'f'
+    (resonance frequency), 'tau' (decay) and 'd' (fault size)."""
+    return {
+        "ord": float(rng.uniform(*ORD_RANGE)),
+        "f": float(rng.uniform(*SIG_F_RANGE)),
+        "tau": float(rng.uniform(*SIG_TAU_RANGE)),
+        "d": int(rng.integers(*fsize_interval)),
+    }
+
+
 def sigtilde(sigloc: Sequence[int], n: int, sig_samp = None, sig_func: Callable[[int], float] = None, fs=1.0):
     """Samples a train of signatures given signature function 'signat'
     evaluated at 0, 1, ..., 'n' with signature offsets 'sigloc'."""
@@ -85,11 +116,15 @@ def signature_train(eosp: Sequence[float], signature, signal_length, fs, fshaft)
     """Create a train of signatures"""
     out = np.zeros((signal_length,), dtype=float)
     n = np.array((eosp/fshaft)*fs, dtype=int)
+    siglen = len(signature)
     for idx in n:
         idx0 = max(0, idx)
-        idx1 = min(signal_length, idx+len(signature))
-        slicelen = idx1-idx0
-        out[idx0:idx1] = signature[:slicelen]
+        idx1 = min(signal_length, idx + siglen)
+        if idx1 <= idx0:
+            continue                       # event falls entirely outside the signal
+        # slice the signature to the visible window (skips the leading part when
+        # an event is jittered before sample 0, or the tail near the end)
+        out[idx0:idx1] = signature[idx0 - idx:idx1 - idx]
     return out
 
 
