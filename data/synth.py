@@ -102,10 +102,16 @@ class VibrationData:
 
 
 
-def generate_vibration(desc: VibrationDescriptor, seed=0, rng=None) -> VibrationData:
+def generate_vibration(desc: VibrationDescriptor, seed=0, rng=None,
+                       return_healthy=False) -> VibrationData:
     """Generates a residual signal according to the provided
     ResidualDescriptor. Always generates the same result unless a
     different value of 'seed' is used.
+
+    If `return_healthy` is True, returns a `(VibrationData, Signal)` tuple
+    whose second element is the healthy (noise-floor) component alone, on the
+    same sample grid as `VibrationData.signal`. The clean signature train can
+    then be recovered as `vibdata.signal.y - healthy.y`.
     """
     if rng is None:
         rng = np.random.default_rng(seed)
@@ -167,5 +173,9 @@ def generate_vibration(desc: VibrationDescriptor, seed=0, rng=None) -> Vibration
     out = Signal.from_uniform_samples(noise + signal, dx)
     event_shaft_positions = np.concatenate(eosp_)#*dx
     event_labels = np.concatenate(elbl_)
-    return VibrationData(desc=desc, signal=out, eosp=event_shaft_positions,
-                         event_labels=event_labels)
+    vibdata = VibrationData(desc=desc, signal=out, eosp=event_shaft_positions,
+                            event_labels=event_labels)
+    if return_healthy:
+        healthy = Signal.from_uniform_samples(noise, dx)
+        return vibdata, healthy
+    return vibdata

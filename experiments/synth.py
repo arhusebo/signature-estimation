@@ -192,20 +192,37 @@ def eosp_metric(ordf: float,
     return mcdist
 
 
-def snr_experiment(seed: int,
-                   snr: float,
-                   dataname: data.DataName,
-                   anomalous: int,
-                   fsize_interval: tuple[int, int],):
-    """General SNR experiment. This function is called by monte-carlo
-    experiments using multiprocessing and therefore needs to be defined
-    on module-level."""
+@dataclass
+class SignalConfig:
+    """Per-realization parameters used to build a synthetic vibration signal
+    and to run/score IRFS on it."""
+    desc: VibrationDescriptor
+    irfs_params: algorithms.IRFSParams
+    signature: npt.NDArray[np.float64]
+    fsize: int
+    stpres: npt.NDArray[np.float64]
+    impres: npt.NDArray[np.float64]
+    ordf: float
+
+
+def make_signal_config(rng: np.random.Generator,
+                       snr: float,
+                       dataname: data.DataName,
+                       anomalous: int,
+                       fsize_interval: tuple[int, int]) -> SignalConfig:
+    """Set up the parameters for one synthetic-signal realization: draw a
+    fault size, build the fault/anomaly signatures, the `VibrationDescriptor`
+    and the `IRFSParams`. Factored out of `snr_experiment` so other
+    experiments can reuse the exact same configuration.
+
+    The only `rng` draw is the fault size, so calling this and then
+    `generate_vibration(cfg.desc, rng=rng)` reproduces the original
+    experiment's random stream."""
     ordf = 5.0
     fs = 51200
 
-    rng = np.random.default_rng(seed)
     fsize = rng.integers(*fsize_interval)
-    
+
     sig_f = 6.5e3
     sig_tau = 0.001
     sig_fs = 25.e3
@@ -213,7 +230,7 @@ def snr_experiment(seed: int,
     stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t/sig_fs)
     impres = data.synth.signt_impres(sig_f, sig_tau, sig_t/sig_fs)
     signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
-    
+
     signature_anomalous = DEFAULT_ANOMALY_SIGNATURE(np.arange(800)).tolist()
 
     desc: VibrationDescriptor = {
@@ -238,29 +255,45 @@ def snr_experiment(seed: int,
             "snr": 5*snr,
         }
     }
-    
+
     irfs_params = algorithms.IRFSParams(fmin=ordf-0.5, fmax=ordf+0.5,
                                         signature_length=200,
                                         signature_shift=-20,
                                         hyst_ed=0.8,
                                         hyst_mf=0.05)
 
-    vibdata = generate_vibration(desc, rng=rng)
-    benchmark_results = benchmark(vibdata, irfs_params) 
+    return SignalConfig(desc=desc, irfs_params=irfs_params, signature=signature,
+                        fsize=fsize, stpres=stpres, impres=impres, ordf=ordf)
+
+
+def snr_experiment(seed: int,
+                   snr: float,
+                   dataname: data.DataName,
+                   anomalous: int,
+                   fsize_interval: tuple[int, int],):
+    """General SNR experiment. This function is called by monte-carlo
+    experiments using multiprocessing and therefore needs to be defined
+    on module-level."""
+    rng = np.random.default_rng(seed)
+    cfg = make_signal_config(rng, snr, dataname, anomalous, fsize_interval)
+
+    vibdata = generate_vibration(cfg.desc, rng=rng)
+    benchmark_results = benchmark(vibdata, cfg.irfs_params)
 
     # nmse
-    nmse = map(partial(estimate_nmse, signature, 1000),
+    nmse = map(partial(estimate_nmse, cfg.signature, 1000),
                (res.sigest for res in benchmark_results))
-    
+
     # fsize error
-    fse_error = map(lambda sigest: abs(fsize-estimate_fsize(sigest, stpres, impres)),
+    fse_error = map(lambda sigest: abs(cfg.fsize-estimate_fsize(sigest, cfg.stpres, cfg.impres)),
                   (res.sigest for res in benchmark_results))
-    
+
     # eosp error
     eosp_true = [eosp for (eosp, label) in zip(vibdata.eosp, vibdata.event_labels) if label==1]
-    eosp_error = map(lambda r: eosp_metric(ordf, eosp_true, r.eosp), benchmark_results)
+    eosp_error = map(lambda r: eosp_metric(cfg.ordf, eosp_true, r.eosp), benchmark_results)
 
     return {
+        # The nmse can be averaged across MC realizations because the energy of the denominator is 1.
         "nmse": list(nmse),
         "fse_error": list(fse_error),
         "eosp_error": list(eosp_error)
@@ -482,5 +515,89 @@ def pr_compare_sigest(results: list[MethodResult]):
         ax[i+1].axvline(idx0)
         ax[i+1].axvline(idx1)
         ax[i+1].set_ylabel(method.name)
-    
+
     plt.show()
+
+
+# --- Signature-train recovery: AR vs ML denoiser -----------------------------
+
+def recovery_error(estimate: npt.ArrayLike,
+                   target: npt.ArrayLike,
+                   max_shift: int = 300) -> tuple[float, float, int]:
+    """Best-alignment error between a denoiser output `estimate` and the
+    ground-truth `target` (the clean signature train).
+
+    The estimate is slid over the target for integer offsets in
+    [-max_shift, max_shift] so a method that returns a delayed/shorter signal
+    (e.g. AR residuals, which drop the first `p` samples) is not penalised for
+    the shift. At the best offset, two normalised errors are returned:
+      - `nmse`      : scale-invariant, min over an optimal scalar gain g of
+                      ||g*estimate - target||^2 / ||target||^2  ( = 1 - rho^2 )
+      - `nmse_noscale`: the same with g = 1 (also penalises amplitude mismatch)
+    plus the best relative offset (samples).
+    """
+    e = np.asarray(estimate, dtype=float)
+    t = np.asarray(target, dtype=float)
+    L = min(len(e), len(t)) - 2*max_shift
+    if L <= 0:
+        raise ValueError("signals too short for the requested max_shift")
+
+    tt = t[max_shift:max_shift+L]                                  # fixed target window
+    en_t = float(tt @ tt)
+    cross = scipy.signal.correlate(e, tt, mode="valid")           # <e[k:k+L], tt>
+    en_e = scipy.signal.fftconvolve(e*e, np.ones(L), mode="valid")  # <e[k:k+L], e[k:k+L]>
+    n = min(len(cross), len(en_e))
+    cross, en_e = cross[:n], en_e[:n]
+
+    rho2 = cross**2 / (en_e*en_t + 1e-30)
+    best = int(np.argmax(rho2))
+    nmse = float(max(0.0, 1.0 - rho2[best]))
+    nmse_noscale = float((en_e[best] - 2*cross[best] + en_t)/en_t)
+    return nmse, nmse_noscale, best - max_shift
+
+
+def ex_signature_recovery(mc: int = MC_ITERATIONS,
+                          snr_db: float = -25.0,
+                          dataname: data.DataName = data.DataName.UNSW,
+                          fsize_interval: tuple[int, int] = (10, 40)):
+    """Compare how well the AR and ML denoisers recover the clean fault
+    signature train from a noisy `healthy + signature-train` signal, at a
+    fixed SNR.
+
+    For each Monte-Carlo realization a signal is built via `make_signal_config`
+    + `generate_vibration(..., return_healthy=True)` (no anomalies). The true
+    signature train is `signal - healthy`. Each denoiser's residual is scored
+    against it with `recovery_error` (best offset), and the per-method errors
+    are printed."""
+    snr = 10.0**(snr_db/10.0)
+    estimators = {
+        "AR": util.get_armodel(dataname),
+        "ML": util.get_mlmodel(dataname),
+    }
+    errs = {name: [] for name in estimators}
+    errs_noscale = {name: [] for name in estimators}
+
+    for seed in range(mc):
+        rng = np.random.default_rng(seed)
+        cfg = make_signal_config(rng, snr, dataname, anomalous=0,
+                                 fsize_interval=fsize_interval)
+        vibdata, healthy = generate_vibration(cfg.desc, rng=rng, return_healthy=True)
+        true_train = vibdata.signal.y - healthy.y          # clean signature train
+
+        for name, model in estimators.items():
+            resid = model.residuals(vibdata.signal)
+            nmse, nmse_noscale, _ = recovery_error(resid.y, true_train)
+            errs[name].append(nmse)
+            errs_noscale[name].append(nmse_noscale)
+
+    print(f"\nSignature-train recovery @ SNR = {snr_db:.0f} dB  "
+          f"[{dataname}, {mc} MC realizations]")
+    print("error = best-offset NMSE (lower is better)\n")
+    print(f"  {'method':<6}{'NMSE (scale-inv)':>20}{'NMSE (unit gain)':>20}")
+    for name in estimators:
+        a = np.array(errs[name])
+        b = np.array(errs_noscale[name])
+        print(f"  {name:<6}{a.mean():>11.4f} +/-{a.std():<5.3f}"
+              f"{b.mean():>13.4f} +/-{b.std():<5.3f}")
+
+    return {"nmse": errs, "nmse_noscale": errs_noscale}

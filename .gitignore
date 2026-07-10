@@ -163,6 +163,8 @@ cython_debug/
 
 # VS Code
 launch.json
+.vscode/**
 
 # Local configuration file for the project (depends on paths)
 config.toml
+run.py
