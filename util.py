@@ -4,6 +4,7 @@ from functools import cache
 
 from faultevent.signal import ARModel
 import ml
+import ml2
 import data
 
 
@@ -25,3 +26,9 @@ def get_armodel(dataset: data.DataName) -> ARModel:
 @cache
 def get_mlmodel(dataset: data.DataName) -> ml.MLSignalModel:
     return ml.MLSignalModel(ml.Model.load(ml.model_filepath(dataset)))
+
+
+@cache
+def get_ml2model(dataset: data.DataName) -> ml2.ML2SignalModel:
+    """The direct fault-component denoiser (ml2)."""
+    return ml2.load_model(dataset)

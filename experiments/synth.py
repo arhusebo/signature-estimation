@@ -73,7 +73,7 @@ def benchmark(vibdata: VibrationData,
     vib = vibdata.signal
 
     armodel = util.get_armodel(dataname)
-    mlmodel = util.get_mlmodel(dataname)
+    mlmodel = util.get_ml2model(dataname)   # ML2: direct fault-component denoiser (feeds IRFS)
 
     resid_ar = armodel.residuals(vib)
     resid_ml = mlmodel.residuals(vib)
@@ -312,7 +312,7 @@ def ex_snr(status: ExperimentStatus):
     """Monte-carlo simulation of signature NMSE for varying SNR"""
 
     conf = {
-        "snr": np.logspace(-2, 0, 10).tolist(),
+        "snr": np.logspace(-3, 0, 10).tolist(),
         "dataname": [data.DataName.UNSW,],
         "anomalous": [0, 100,],
         "fsize_interval": [(10, 40)],
@@ -574,6 +574,11 @@ def ex_signature_recovery(mc: int = MC_ITERATIONS,
         "AR": util.get_armodel(dataname),
         "ML": util.get_mlmodel(dataname),
     }
+    # add the direct fault-component denoiser if it has been trained
+    import ml2
+    if ml2.model_filepath(dataname).exists():
+        estimators["ML2"] = ml2.load_model(dataname)
+
     errs = {name: [] for name in estimators}
     errs_noscale = {name: [] for name in estimators}
 
