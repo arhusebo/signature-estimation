@@ -1,5 +1,5 @@
 from multiprocessing import Pool
-from typing import TypedDict, Callable, NotRequired, Any
+from typing import TypedDict, Callable, NotRequired, Any, Literal
 from dataclasses import dataclass
 from collections import deque
 from collections.abc import Sequence
@@ -209,7 +209,7 @@ def make_signal_config(rng: np.random.Generator,
                        snr: float,
                        dataname: data.DataName,
                        anomalous: int,
-                       fsize_interval: tuple[int, int]) -> SignalConfig:
+                       fix_signature_params: dict = {},) -> SignalConfig:
     """Set up the parameters for one synthetic-signal realization: draw the
     fault-signature parameters (order, resonance frequency, decay, fault size)
     within the a-priori uncertainty of a fixed bearing, then build the
@@ -224,7 +224,9 @@ def make_signal_config(rng: np.random.Generator,
     # Realized signature parameters (with slip / modal uncertainty). The
     # realized order generates the events and scores EOSPs; IRFS still searches
     # around the *nominal* order (what would be known a priori).
-    params = data.synth.draw_signature_params(rng, fsize_interval)
+    params = data.synth.draw_signature_params(
+            rng,
+            **fix_signature_params,)
     ordf = params["ord"]
     fsize = params["d"]
 
@@ -233,7 +235,8 @@ def make_signal_config(rng: np.random.Generator,
     sig_t = np.arange(data.synth.SIG_LEN)
     stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t/sig_fs)
     impres = data.synth.signt_impres(sig_f, sig_tau, sig_t/sig_fs)
-    signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
+    signature = stpres/20 + impres
+    #signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
 
     signature_anomalous = DEFAULT_ANOMALY_SIGNATURE(np.arange(800)).tolist()
 
@@ -275,12 +278,12 @@ def snr_experiment(seed: int,
                    snr: float,
                    dataname: data.DataName,
                    anomalous: int,
-                   fsize_interval: tuple[int, int],):
+                   fix_signature_params: dict = {},):
     """General SNR experiment. This function is called by monte-carlo
     experiments using multiprocessing and therefore needs to be defined
     on module-level."""
     rng = np.random.default_rng(seed)
-    cfg = make_signal_config(rng, snr, dataname, anomalous, fsize_interval)
+    cfg = make_signal_config(rng, snr, dataname, anomalous, fix_signature_params)
 
     vibdata = generate_vibration(cfg.desc, rng=rng)
     benchmark_results = benchmark(vibdata, cfg.irfs_params)
@@ -312,38 +315,117 @@ def extract_metric(results: list[dict], name: str):
     return [r[name] for r in results]
 
 
+type IndependentVarname = Literal["snr", "anomalous", "fsize", "sig_f", "sig_tau"]
+type DependentVarname = Literal["nmse", "fse_error", "eosp_error"]
+
+
+class ExperimentResults(TypedDict):
+    nmse: list
+    fse_error: list
+    eosp_error: list
+    indep_var: list
+
+
+def ex_indep_var(indep_name: IndependentVarname, indep_var: list[Any], ex_params: dict):
+    """Experiments are defined by one independent variable.
+    All dependent variables are estimated for the given independent
+    variable.
+    This allows experiments to be run separately for different
+    independent variables.
+    """
+    if not "fix_signature_params" in ex_params:
+        ex_params["fix_signature_params"] = {}
+
+
+    def ex(status: ExperimentStatus):
+        status.max_progress = len(indep_var)
+        results = []
+        for i, x in enumerate(indep_var):
+            kwargs = []
+            for j in range(MC_ITERATIONS):
+                entry = {"dataname": "unsw", "seed": i*MC_ITERATIONS+j, **ex_params}
+                match indep_name:
+                    case "snr":
+                        entry["snr"] = x
+                    case "anomalous":
+                        entry["anomalous"] = x
+                    case "fsize":
+                        entry["fix_signature_params"]["d"] = x
+                    case "fsize":
+                        entry["fix_signature_params"]["d"] = x
+                    case "sig_f":
+                        entry["fix_signature_params"]["sig_f"] = x
+                    case "sig_d":
+                        entry["fix_signature_params"]["sig_d"] = x
+                kwargs.append(entry)
+            # spawn a process for each MC iteration at the current value
+            # of independent variable
+            with Pool(MAX_WORKERS) as p:
+                res = p.map(wrap_snr_experiment, kwargs)
+                xmetric = partial(extract_metric, res)
+                results.append({
+                    "nmse": np.mean(xmetric("nmse"), axis=0).tolist(),
+                    "fse_error": np.mean(xmetric("fse_error"), axis=0).tolist(),
+                    "eosp_error": np.mean(xmetric("eosp_error"), axis=0).tolist(),
+                    "indep_var": x,
+                })
+            status.progress = i+1
+        return results
+
+    return ex
+
+
 @experiment(OUTPUT_PATH, json=True)
-def ex_snr(status: ExperimentStatus):
-    """Monte-carlo simulation of signature NMSE for varying SNR"""
-
-    conf = {
-        "snr": np.logspace(-3, 0, 10).tolist(),
-        "dataname": [data.DataName.UNSW,],
-        "anomalous": [0, 100,],
-        "fsize_interval": [(10, 40)],
-    }
-
-    conf_list = list(dict(zip(conf.keys(), x)) for x in itertools.product(*conf.values()))
-
-    status.max_progress = len(conf_list)
-    results = []
-    for i, conf in enumerate(conf_list):
-        kwargs = ({**conf, "seed": i} for i in range(MC_ITERATIONS))
-        with Pool(MAX_WORKERS) as p:
-            res = p.map(wrap_snr_experiment, kwargs)
-            xmetric = partial(extract_metric, res)
-            results.append({
-                "nmse": np.mean(xmetric("nmse"), axis=0).tolist(),
-                "fse_error": np.mean(xmetric("fse_error"), axis=0).tolist(),
-                "eosp_error": np.mean(xmetric("eosp_error"), axis=0).tolist(),
-                "conf": conf,
-            })
-        status.progress = i+1
-        
-    return results
+def ex_snr(arg):
+    indep_var = np.logspace(-3, 0, 10).tolist()
+    ex_params = {
+            "anomalous": 0,
+        }
+    return ex_indep_var("snr", indep_var, ex_params)(arg)
 
 
-# Present NMSE vs SNR results
+@experiment(OUTPUT_PATH, json=True)
+def ex_anomalous(arg):
+    indep_var = np.arange(0, 550, 50).tolist()
+    ex_params = {
+            "snr": 0.03,
+        }
+    return ex_indep_var("anomalous", indep_var, ex_params)(arg)
+
+
+@experiment(OUTPUT_PATH, json=True)
+def ex_fsize(arg):
+    start, stop = data.synth.FSIZE_RANGE
+    step = 5
+    indep_var = [(x, x+1) for x in range(start, stop+step, step)]
+    ex_params = {
+            "snr": 0.005,
+            "anomalous": 0,
+        }
+    return ex_indep_var("fsize", indep_var, ex_params)(arg)
+
+
+@experiment(OUTPUT_PATH, json=True)
+def ex_sig_f(arg):
+    indep_var = np.arange(*data.synth.SIG_F_RANGE, 5e2)
+    ex_params = {
+            "snr": 0.005,
+            "anomalous": 0,
+        }
+    return ex_indep_var("sig_f", indep_var, ex_params)(arg)
+
+
+@experiment(OUTPUT_PATH, json=True)
+def ex_sig_tau(arg):
+    indep_var = np.arange(*data.synth.SIG_TAU_RANGE, 0.2e-3)
+    ex_params = {
+            "snr": 0.005,
+            "anomalous": 0,
+        }
+    return ex_indep_var("sig_tau", indep_var, ex_params)(arg)
+
+
+# ---- Presentation ----
 
 def results_predicate(dataname: data.DataName, anomalous: bool):
     def filt(result):
@@ -355,8 +437,93 @@ def results_predicate(dataname: data.DataName, anomalous: bool):
     return filt
 
 
+def present_experiment(indep: IndependentVarname, dep: DependentVarname,
+                       results: ExperimentResults):
+    """Presents the experiment of the given independent variable"""
+
+    matplotlib.rcParams.update({"font.size": 6})
+    legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
+    markers = ["o", "^", "d", ".", "*", "+"]
+    cmap = plt.get_cmap("tab10")
+    cmap_idx = [0, 1, 2, 1, 2, 3]
+    _, ax = plt.subplots(1, 1, sharex=True, figsize=(3.5, 2.0))
+    
+    indep_var = [r["indep_var"] for r in results]
+    if indep=="snr":
+        x = 10*np.log10(indep_var)
+    elif indep=="fsize":
+        x = [v[0] for v in indep_var]
+    else:
+        x = indep_var
+
+    match indep:
+        case "snr":
+            ax.set_xlabel("SNR [dB]")
+        case "anomalous":
+            ax.set_xlabel("Anomalous events")
+        case "fsize":
+            ax.set_xlabel("Fault size [Samples]")
+  
+
+    match dep:
+        case "nmse":
+            ax.set_ylabel("NMSE")
+            ax.set_yticks([0.0, 0.5, 1.0])
+        case "fse_error":
+            ax.set_ylabel("Fault size error (samples)")
+        case "eosp_error":
+            ax.set_ylabel("EOT error\n[s]")
+            #ax.set_ylim(0, 10*np.max(x[:,0]))
+
+    # do plotting
+    y = np.array([r[dep] for r in results])
+    for i in range(y.shape[-1]):
+        ax.plot(x, y[:,i], marker=markers[i], c=cmap(cmap_idx[i]))
+    
+    ax.grid()
+    ax.legend(legend, ncol=len(legend)//2, loc="upper center",
+              bbox_to_anchor=(0.5, 1.3))
+
+    plt.tight_layout(pad=0.0)
+    
+    plt.show()
+
+
 @presentation(ex_snr)
-def pr_nmse(results):
+def pr_snr_nmse(results):
+    present_experiment("snr", "nmse", results)
+
+@presentation(ex_snr)
+def pr_snr_fse(results):
+    present_experiment("snr", "fse_error", results)
+
+@presentation(ex_snr)
+def pr_snr_eot(results):
+    present_experiment("snr", "eosp_error", results)
+
+@presentation(ex_anomalous)
+def pr_anomalous_nmse(results):
+    present_experiment("anomalous", "nmse", results)
+
+@presentation(ex_anomalous)
+def pr_anomalous_fse(results):
+    present_experiment("anomalous", "fse_error", results)
+
+@presentation(ex_fsize)
+def pr_fsize_nmse(results):
+    present_experiment("fsize", "nmse", results)
+
+@presentation(ex_sig_f)
+def pr_sig_f_nmse(results):
+    present_experiment("sig_f", "nmse", results)
+
+@presentation(ex_sig_tau)
+def pr_sig_tau_nmse(results):
+    present_experiment("sig_tau", "nmse", results)
+
+
+@presentation(ex_snr)
+def pr_nmse_old(results):
     matplotlib.rcParams.update({"font.size": 6})
     ylabels = ["A", "B"]
     legend = ["IRFS", "MED", "SK", "AR-MED", "AR-SK", "Compound"]
@@ -588,8 +755,7 @@ def ex_signature_recovery(mc: int = MC_ITERATIONS,
 
     for seed in range(mc):
         rng = np.random.default_rng(seed)
-        cfg = make_signal_config(rng, snr, dataname, anomalous=0,
-                                 fsize_interval=fsize_interval)
+        cfg = make_signal_config(rng, snr, dataname, anomalous=0)
         vibdata, healthy = generate_vibration(cfg.desc, rng=rng, return_healthy=True)
         true_train = vibdata.signal.y - healthy.y          # clean signature train
 

@@ -83,17 +83,18 @@ SIG_TAU_NOMINAL = 1.0e-3     # nominal resonance decay time constant [s]
 ORD_RANGE = (4.5, 5.5)            # 
 SIG_F_RANGE = (4.e3, 8.e3)      # ~+/-15% resonance / modal uncertainty
 SIG_TAU_RANGE = (0.3e-3, 2.e-3)  # damping uncertainty
+FSIZE_RANGE = (10, 40)          # fault size [samples]
 
 
-def draw_signature_params(rng, fsize_interval=(10, 40)):
+def draw_signature_params(rng, **params):
     """Draw a randomized set of fault-signature parameters within the a-priori
     uncertainty of a fixed bearing. Returns a dict with keys 'ord' (order), 'f'
     (resonance frequency), 'tau' (decay) and 'd' (fault size)."""
     return {
-        "ord": float(rng.uniform(*ORD_RANGE)),
-        "f": float(rng.uniform(*SIG_F_RANGE)),
-        "tau": float(rng.uniform(*SIG_TAU_RANGE)),
-        "d": int(rng.integers(*fsize_interval)),
+        "ord": params.get("ord", float(rng.uniform(*ORD_RANGE))),
+        "f": params.get("sig_f", float(rng.uniform(*SIG_F_RANGE))),
+        "tau": params.get("tau", float(rng.uniform(*SIG_TAU_RANGE))),
+        "d": params.get("d", int(rng.integers(*FSIZE_RANGE))),
     }
 
 
