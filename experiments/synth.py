@@ -349,8 +349,8 @@ def ex_indep_var(indep_name: IndependentVarname, indep_var: list[Any], ex_params
                         entry["snr"] = x
                     case "anomalous":
                         entry["anomalous"] = x
-                    case "fsize":
-                        entry["fix_signature_params"]["d"] = x
+                    case "ordf":
+                        entry["fix_signature_params"]["ord"] = x
                     case "fsize":
                         entry["fix_signature_params"]["d"] = x
                     case "sig_f":
@@ -398,6 +398,16 @@ def ex_fsize(arg):
     start, stop = data.synth.FSIZE_RANGE
     step = 5
     indep_var = [(x, x+1) for x in range(start, stop+step, step)]
+    ex_params = {
+            "snr": 0.005,
+            "anomalous": 0,
+        }
+    return ex_indep_var("fsize", indep_var, ex_params)(arg)
+
+
+@experiment(OUTPUT_PATH, json=True)
+def ex_ordf(arg):
+    indep_var = np.arange(2.0, 6.0, 0.5)
     ex_params = {
             "snr": 0.005,
             "anomalous": 0,
@@ -456,6 +466,10 @@ def present_experiment(indep: IndependentVarname, dep: DependentVarname,
     else:
         x = indep_var
 
+    y = np.array([r[dep] for r in results])
+    if indep=="fsize":
+        y = y[:,:,0]
+
     match indep:
         case "snr":
             ax.set_xlabel("SNR [dB]")
@@ -463,6 +477,8 @@ def present_experiment(indep: IndependentVarname, dep: DependentVarname,
             ax.set_xlabel("Anomalous events")
         case "fsize":
             ax.set_xlabel("Fault size [Samples]")
+        case "ordf":
+            ax.set_xlabel("Fault order [X]")
   
 
     match dep:
@@ -476,7 +492,6 @@ def present_experiment(indep: IndependentVarname, dep: DependentVarname,
             #ax.set_ylim(0, 10*np.max(x[:,0]))
 
     # do plotting
-    y = np.array([r[dep] for r in results])
     for i in range(y.shape[-1]):
         ax.plot(x, y[:,i], marker=markers[i], c=cmap(cmap_idx[i]))
     
@@ -506,12 +521,28 @@ def pr_anomalous_nmse(results):
     present_experiment("anomalous", "nmse", results)
 
 @presentation(ex_anomalous)
+def pr_anomalous_eot(results):
+    present_experiment("anomalous", "eosp_error", results)
+
+@presentation(ex_anomalous)
 def pr_anomalous_fse(results):
     present_experiment("anomalous", "fse_error", results)
+
+@presentation(ex_ordf)
+def pr_ordf_nmse(results):
+    present_experiment("ordf", "nmse", results)
+
+@presentation(ex_ordf)
+def pr_ordf_eot(results):
+    present_experiment("ordf", "eosp_error", results)
 
 @presentation(ex_fsize)
 def pr_fsize_nmse(results):
     present_experiment("fsize", "nmse", results)
+
+@presentation(ex_fsize)
+def pr_fsize_fse(results):
+    present_experiment("fsize", "fse_error", results)
 
 @presentation(ex_sig_f)
 def pr_sig_f_nmse(results):
