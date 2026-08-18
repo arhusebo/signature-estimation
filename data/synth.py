@@ -53,9 +53,8 @@ def signt_impres(f, tau, t):
     return np.exp(-t/tau)*np.sin(2*np.pi*f*t) if t>=0.0 else 0.0
 
 
-def signt_res(f, tau, d, t, fs=1.0):
-    """t in terms of samples"""
-    return signt_stpres(f, tau, t/fs)/20 + signt_impres(f, tau, (t-d)/fs)
+def signt_res(f, tau, d, t):
+    return signt_stpres(f, tau, t)/20 + signt_impres(f, tau, t-d)
 
 
 def DEFAULT_ANOMALY_SIGNATURE(n):

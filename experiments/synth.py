@@ -232,11 +232,12 @@ def make_signal_config(rng: np.random.Generator,
 
     sig_f, sig_tau = params["f"], params["tau"]
     sig_fs = data.synth.SIG_FS
-    sig_t = np.arange(data.synth.SIG_LEN)
-    stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t/sig_fs)
-    impres = data.synth.signt_impres(sig_f, sig_tau, sig_t/sig_fs)
-    signature = stpres/20 + impres
-    #signature = data.synth.signt_res(sig_f, sig_tau, fsize, sig_t, fs=sig_fs)
+    sig_t = np.arange(data.synth.SIG_LEN)/sig_fs
+    dt = fsize/sig_fs
+    stpres = data.synth.signt_stpres(sig_f, sig_tau, sig_t)
+    impres = data.synth.signt_impres(sig_f, sig_tau, sig_t)
+    #signature = stpres/20 + impres
+    signature = data.synth.signt_res(sig_f, sig_tau, dt, sig_t)
 
     signature_anomalous = DEFAULT_ANOMALY_SIGNATURE(np.arange(800)).tolist()
 
@@ -397,9 +398,9 @@ def ex_anomalous(arg):
 def ex_fsize(arg):
     start, stop = data.synth.FSIZE_RANGE
     step = 5
-    indep_var = [(x, x+1) for x in range(start, stop+step, step)]
+    indep_var = np.arange(start, stop, step).tolist()
     ex_params = {
-            "snr": 0.005,
+            "snr": 0.01,
             "anomalous": 0,
         }
     return ex_indep_var("fsize", indep_var, ex_params)(arg)
@@ -461,14 +462,10 @@ def present_experiment(indep: IndependentVarname, dep: DependentVarname,
     indep_var = [r["indep_var"] for r in results]
     if indep=="snr":
         x = 10*np.log10(indep_var)
-    elif indep=="fsize":
-        x = [v[0] for v in indep_var]
     else:
         x = indep_var
 
     y = np.array([r[dep] for r in results])
-    if indep=="fsize":
-        y = y[:,:,0]
 
     match indep:
         case "snr":
@@ -718,6 +715,62 @@ def pr_compare_sigest(results: list[MethodResult]):
         ax[i+1].axvline(idx1)
         ax[i+1].set_ylabel(method.name)
 
+    plt.show()
+
+
+# --- Fault size estimation performance ----------------------------------------
+
+@experiment(OUTPUT_PATH, json=True)
+def ex_fse2d(status: ExperimentStatus):
+    """
+    Apply the fault size estimator to the true signature with added WGN
+    over variable SNR and fault size.
+    """
+
+    d = np.arange(20, 40)
+    snr = np.logspace(-3, 2, 20)
+    
+    status.max_progress = len(d)*len(snr)
+    
+    # Signature params
+    sig_f = 6.5e3
+    sig_tau = 0.001
+    sig_fs = 25.e3
+    sig_t = np.arange(800)/sig_fs
+    
+    sig_entry = data.synth.signt_stpres(sig_f, sig_tau, sig_t)
+    sig_exit = data.synth.signt_impres(sig_f, sig_tau, sig_t)
+
+    def gen_signature(snr, d, rng):
+        return sig + noise
+
+    results = np.zeros((len(d), len(snr)), dtype=float)
+    for i, d_ in enumerate(d):
+        td = d_/sig_fs
+        sig = data.synth.signt_res(sig_f, sig_tau, td, sig_t)
+        for j, snr_ in enumerate(snr):
+            fse = []
+            for seed in range(MC_ITERATIONS):
+
+                rng = np.random.default_rng(seed=seed)
+                sigpow = np.var(sig) # just assume zero-mean
+                noisepow = sigpow / snr_ # snr = sigpow / noisepow => noisepow = sigpow / snr
+                noise = rng.standard_normal(len(sig_t))*np.sqrt(noisepow)
+
+                fse.append(estimate_fsize(sig + noise, sig_entry, sig_exit))
+
+            results[i, j] = np.mean(abs(fse-d_))
+            status.progress = i*len(snr)+j+1
+
+    return {"fsize": d.tolist(), "snr": snr.tolist(), "results": results.tolist()}
+
+
+@presentation(ex_fse2d)
+def pr_fse2d(results):
+    img = results["results"]
+    plt.imshow(results["results"])
+    plt.yticks(np.arange(np.shape(img)[0]), results["fsize"])
+    plt.xticks(np.arange(np.shape(img)[1]), results["snr"])
     plt.show()
 
 
