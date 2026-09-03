@@ -85,9 +85,9 @@ def synth_example(rng, noise_pool, length):
     noise = noise_full[idx0:idx0 + length]
     pow_noise = np.var(noise)
 
-    p = synth.draw_signature_params(rng, FSIZE_INTERVAL)
-    signature = synth.signt_res(p["f"], p["tau"], p["d"],
-                                np.arange(synth.SIG_LEN), fs=synth.SIG_FS)
+    p = synth.draw_signature_params(rng)
+    signature = synth.signt_res(p["f"], p["tau"], p["d"]/synth.SIG_FS,
+                                np.arange(synth.SIG_LEN)/synth.SIG_FS)
     snr = 10.0 ** (rng.uniform(*SNR_DB_RANGE) / 10.0)
 
     eosp_end = length / FS * FSHAFT
@@ -126,27 +126,59 @@ def loss_fn(out, target, scale_weight=0.5):
 
 # --- training ----------------------------------------------------------------
 def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
-          lr=1e-3, seed=0, device="cpu"):
+          lr=1e-3, seed=0, device="cpu",
+          overwrite=False):
     rng = np.random.default_rng(seed)
     model = Denoiser().to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
+    lrs = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=0.5)
+    
+    step = 0
+    hist_loss = []
+    hist_lr = []
+    if not overwrite:
+        try:
+            state = torch.load(savepath)
+        except Exception:
+            print("could not load model state")
+        model.load_state_dict(state["model_state_dict"])
+        opt.load_state_dict(state["optimizer_state_dict"])
+        lrs.load_state_dict(state["lrs_state_dict"])
+        step = state["step"]
+        hist_loss = state["loss_history"]
+        hist_lr = state["lr_history"]
     model.train()
-    hist = []
-    for step in range(steps):
-        xs, ts = synth_batch(rng, noise_pool, length, batch_size)
-        x = torch.from_numpy(xs).unsqueeze(1).to(device)      # (B, 1, L)
-        t = torch.from_numpy(ts).unsqueeze(1).to(device)
-        sd = x.std(dim=-1, keepdim=True) + 1e-8               # per-example scale
-        opt.zero_grad()
-        out = model(x / sd)
-        loss = loss_fn(out, t / sd)
-        loss.backward()
-        opt.step()
-        hist.append(loss.item())
-        if (step + 1) % 100 == 0:
-            print(f"step {step + 1}/{steps}  loss {np.mean(hist[-100:]):.4f}",
-                  flush=True)
-    torch.save({"model_state_dict": model.state_dict()}, savepath)
+
+    try:
+        for step_ in range(steps):
+            xs, ts = synth_batch(rng, noise_pool, length, batch_size)
+            x = torch.from_numpy(xs).unsqueeze(1).to(device)      # (B, 1, L)
+            t = torch.from_numpy(ts).unsqueeze(1).to(device)
+            sd = x.std(dim=-1, keepdim=True) + 1e-8               # per-example scale
+            opt.zero_grad()
+            out = model(x / sd)
+            loss = loss_fn(out, t / sd)
+            loss.backward()
+            opt.step()
+            step += 1
+            hist_loss.append(loss.item())
+            lrs.step(loss.detach())
+            hist_lr.append(lrs.get_last_lr())
+            
+            if (step_ + 1) % 100 == 0:
+                print(f"step {step_ + 1}/{steps}  loss {np.mean(hist_loss[-100:]):.4f}",
+                      flush=True)
+    except KeyboardInterrupt:
+        print("Training was interrupted early...")
+
+    torch.save({
+            "step": step,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": opt.state_dict(),
+            "lrs_state_dict": lrs.state_dict(),
+            "loss_history": hist_loss,
+            "lr_history": hist_lr,
+        }, savepath)
     print(f"saved {savepath}", flush=True)
     return model
 
@@ -198,6 +230,15 @@ def load_noise_pool(dataname: data.DataName, n_files: int = 10):
         case data.DataName.UNSW:
             candidates = itertools.islice(
                 glob.iglob("Test 1/6Hz/*.mat", root_dir=dp), n_files + 1)
+        case data.DataName.UIA:
+            exclude_idx = ["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
+            candidates = filter(
+                    lambda x: "1000rpm" in x
+                    and not pathlib.Path(x) in map(pathlib.Path, exclude_idx),
+                glob.iglob("y2016-m09-d20/*.h5", root_dir=dp))
+        case data.DataName.CWRU:
+            exclude_idx = ["099"]
+            candidates = ["097", "098", "100"] # "099" excluded
         case _:
             raise NotImplementedError(f"noise pool not defined for {dataname}")
     ids = [c for c in candidates
@@ -217,6 +258,28 @@ def pick_device() -> str:
     return "cpu"
 
 
+def plot_history(name: data.DataName):
+    """Plot the model training history for a dataset"""
+    import matplotlib.pyplot as plt
+    savepath = model_filepath(name)
+    state = torch.load(savepath)
+    step = state["step"]
+    loss_history = state["loss_history"]
+    lr_history = state["lr_history"]
+
+    fig, ax = plt.subplots(1, 1)
+    ax2 = ax.twinx()
+    ax.plot(range(step), loss_history, label="loss")
+    ax2.plot(range(step), lr_history, label="lr", color="k", ls="--")
+    ax2.set_yscale("log")
+    plt.title(f"training history for\n\"{name}\" dataset")
+    plt.legend()
+    ax.set_xlabel("step")
+    ax.set_ylabel("loss")
+    ax2.set_ylabel("lr")
+    plt.show()
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser(prog="ml2",
                                 description="train the direct fault-component denoiser")
@@ -224,6 +287,8 @@ if __name__ == "__main__":
     p.add_argument("-s", "--steps", type=int, default=4000)
     p.add_argument("-b", "--batch", type=int, default=16)
     p.add_argument("-l", "--length", type=int, default=8192)
+    p.add_argument("-x", "--overwrite", action="store_true",)
+    p.add_argument("--lr", type=float, default=1e-3)
     args = p.parse_args()
 
     dataname = data.DataName(args.name)
@@ -231,4 +296,5 @@ if __name__ == "__main__":
     print(f"device: {device}")
     pool = load_noise_pool(dataname)
     train(pool, model_filepath(dataname), steps=args.steps,
-          batch_size=args.batch, length=args.length, device=device)
+          batch_size=args.batch, length=args.length, device=device,
+          overwrite=args.overwrite, lr=args.learning_rate)
