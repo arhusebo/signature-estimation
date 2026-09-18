@@ -21,6 +21,7 @@ import itertools
 import pathlib
 
 import numpy as np
+from scipy.signal import butter, sosfilt
 import torch
 import torch.nn as nn
 
@@ -98,12 +99,46 @@ def synth_example(rng, noise_pool, length):
 
     return noise + component, component
 
+def synth_example2(rng, noise_pool, length):
+    """Adds some "faulty" signals consisting of impules of
+    bandpass-filtered WGN at various central frequencies,
+    on top of the "healthy" noise.
+    """
+    p = synth.draw_signature_params(rng)
 
-def synth_batch(rng, noise_pool, length, batch_size):
+    noise_full = noise_pool[rng.integers(len(noise_pool))]
+    idx0 = rng.integers(len(noise_full) - length)
+    noise = noise_full[idx0:idx0 + length]
+    pow_noise = np.var(noise)
+
+    fault = np.zeros((length,))
+    FC = [(2e3, 4e3), (10e3, 20e3)]
+    for fc in FC:
+        x = rng.standard_normal((length,)) # STD=1.0
+        sos = butter(4, fc, "bp", output="sos", fs=FS)
+        y = sosfilt(sos, x)
+        fault += y
+
+    std_signature = np.std(fault)
+
+    # TODO: localize noise to impulses
+    win = np.ones((100,))
+    eosp_end = length / FS * FSHAFT
+    eosp = np.arange(0, eosp_end, 1 / p["ord"])
+    eosp = eosp + rng.standard_normal(len(eosp)) * FAULT_STD
+    
+    snr = 10.0 ** (rng.uniform(*SNR_DB_RANGE) / 10.0)
+    mask = synth.signature_train(eosp, win, length, fs=FS, fshaft=FSHAFT)
+    fault *= mask
+    fault = np.sqrt(pow_noise * snr) * fault / std_signature
+
+    return noise + fault, fault
+
+def synth_batch(rng, noise_pool, length, batch_size, func_example):
     xs = np.empty((batch_size, length), dtype=np.float32)
     ts = np.empty((batch_size, length), dtype=np.float32)
     for i in range(batch_size):
-        xs[i], ts[i] = synth_example(rng, noise_pool, length)
+        xs[i], ts[i] = func_example(rng, noise_pool, length)
     return xs, ts
 
 
@@ -126,14 +161,14 @@ def loss_fn(out, target, scale_weight=0.5):
 
 # --- training ----------------------------------------------------------------
 def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
-          lr=1e-3, seed=0, device="cpu"):
+          lr=1e-3, seed=0, device="cpu", func_example=synth_example):
     rng = np.random.default_rng(seed)
     model = Denoiser().to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     model.train()
     hist = []
     for step in range(steps):
-        xs, ts = synth_batch(rng, noise_pool, length, batch_size)
+        xs, ts = synth_batch(rng, noise_pool, length, batch_size, func_example)
         x = torch.from_numpy(xs).unsqueeze(1).to(device)      # (B, 1, L)
         t = torch.from_numpy(ts).unsqueeze(1).to(device)
         sd = x.std(dim=-1, keepdim=True) + 1e-8               # per-example scale
@@ -224,11 +259,18 @@ if __name__ == "__main__":
     p.add_argument("-s", "--steps", type=int, default=4000)
     p.add_argument("-b", "--batch", type=int, default=16)
     p.add_argument("-l", "--length", type=int, default=8192)
+    p.add_argument("-f", "--func-example", type=int, default=1, choices=[1,2])
     args = p.parse_args()
 
     dataname = data.DataName(args.name)
     device = pick_device()
     print(f"device: {device}")
     pool = load_noise_pool(dataname)
+    match args.func_example:
+        case 1:
+            func_example = synth_example
+        case 2:
+            func_example = synth_example2
     train(pool, model_filepath(dataname), steps=args.steps,
-          batch_size=args.batch, length=args.length, device=device)
+          batch_size=args.batch, length=args.length, device=device,
+          func_example=func_example)
