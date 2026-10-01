@@ -136,17 +136,17 @@ def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
     step = 0
     hist_loss = []
     hist_lr = []
-    if not overwrite:
-        try:
-            state = torch.load(savepath)
-        except Exception:
-            print("could not load model state")
+    if not overwrite and pathlib.Path(savepath).exists():
+        state = torch.load(savepath, map_location=device)
         model.load_state_dict(state["model_state_dict"])
         opt.load_state_dict(state["optimizer_state_dict"])
         lrs.load_state_dict(state["lrs_state_dict"])
         step = state["step"]
         hist_loss = state["loss_history"]
         hist_lr = state["lr_history"]
+        print(f"resuming from {savepath} at step {step}", flush=True)
+    else:
+        print("training from scratch", flush=True)
     model.train()
 
     try:
@@ -297,4 +297,4 @@ if __name__ == "__main__":
     pool = load_noise_pool(dataname)
     train(pool, model_filepath(dataname), steps=args.steps,
           batch_size=args.batch, length=args.length, device=device,
-          overwrite=args.overwrite, lr=args.learning_rate)
+          overwrite=args.overwrite, lr=args.lr)
