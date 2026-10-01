@@ -127,12 +127,27 @@ def loss_fn(out, target, scale_weight=0.5):
 # --- training ----------------------------------------------------------------
 def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
           lr=1e-3, seed=0, device="cpu",
-          overwrite=False):
-    rng = np.random.default_rng(seed)
+          overwrite=False, sched_every=100, ckpt_every=500, min_lr=0.0):
     model = Denoiser().to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
-    lrs = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=0.5)
-    
+    # stepped once per `sched_every` steps on the windowed mean loss (the
+    # per-batch loss is far too noisy to detect a plateau)
+    lrs = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=0.5, patience=5)
+
+    def save():
+        # write to a temporary file first so an interrupted save cannot
+        # corrupt the existing checkpoint
+        tmppath = pathlib.Path(f"{savepath}.tmp")
+        torch.save({
+                "step": step,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": opt.state_dict(),
+                "lrs_state_dict": lrs.state_dict(),
+                "loss_history": hist_loss,
+                "lr_history": hist_lr,
+            }, tmppath)
+        tmppath.replace(savepath)
+
     step = 0
     hist_loss = []
     hist_lr = []
@@ -147,6 +162,9 @@ def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
         print(f"resuming from {savepath} at step {step}", flush=True)
     else:
         print("training from scratch", flush=True)
+    # seeded by the global step so a resumed run draws new signals instead of
+    # replaying the ones already trained on
+    rng = np.random.default_rng([seed, step])
     model.train()
 
     try:
@@ -162,23 +180,23 @@ def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
             opt.step()
             step += 1
             hist_loss.append(loss.item())
-            lrs.step(loss.detach())
+            if (step_ + 1) % sched_every == 0:
+                lrs.step(np.mean(hist_loss[-sched_every:]))
             hist_lr.append(lrs.get_last_lr())
-            
+
             if (step_ + 1) % 100 == 0:
                 print(f"step {step_ + 1}/{steps}  loss {np.mean(hist_loss[-100:]):.4f}",
                       flush=True)
+            if (step_ + 1) % ckpt_every == 0:
+                save()
+            if opt.param_groups[0]["lr"] < min_lr:
+                print(f"stopping early at step {step_ + 1}: lr below {min_lr:g}",
+                      flush=True)
+                break
     except KeyboardInterrupt:
         print("Training was interrupted early...")
 
-    torch.save({
-            "step": step,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": opt.state_dict(),
-            "lrs_state_dict": lrs.state_dict(),
-            "loss_history": hist_loss,
-            "lr_history": hist_lr,
-        }, savepath)
+    save()
     print(f"saved {savepath}", flush=True)
     return model
 
@@ -289,6 +307,8 @@ if __name__ == "__main__":
     p.add_argument("-l", "--length", type=int, default=8192)
     p.add_argument("-x", "--overwrite", action="store_true",)
     p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--min-lr", type=float, default=0.0,
+                   help="stop early once the learning rate drops below this")
     args = p.parse_args()
 
     dataname = data.DataName(args.name)
@@ -297,4 +317,4 @@ if __name__ == "__main__":
     pool = load_noise_pool(dataname)
     train(pool, model_filepath(dataname), steps=args.steps,
           batch_size=args.batch, length=args.length, device=device,
-          overwrite=args.overwrite, lr=args.lr)
+          overwrite=args.overwrite, lr=args.lr, min_lr=args.min_lr)
