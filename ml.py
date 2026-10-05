@@ -18,8 +18,8 @@ Train:  python -m ml unsw -s 4000         # -> models/unsw_ml_healthy.pt
 
 import argparse
 import glob
-import itertools
 import pathlib
+import signal
 
 import numpy as np
 import torch
@@ -98,7 +98,12 @@ def train(pool, savepath, steps=4000, batch_size=16, length=8192,
           overwrite=False, sched_every=100, ckpt_every=500, min_lr=0.0,
           n_val=64):
     """Trains on all recordings in `pool` but the last, which is held out for
-    validation (with a single recording, windows of it are used for both)."""
+    validation (with a single recording, windows of it are used for both).
+
+    The checkpoint holds the model, optimizer and scheduler states together
+    with `history`: one record per completed training step with the keys
+    "loss", "lr" and, on validation steps, "val". The global step count is the
+    length of the history."""
     model = Predictor().to(device)
     if length <= 2 * model.receptive_field:
         raise ValueError(f"length must exceed twice the receptive field "
@@ -126,62 +131,67 @@ def train(pool, savepath, steps=4000, batch_size=16, length=8192,
         # corrupt the existing checkpoint
         tmppath = pathlib.Path(f"{savepath}.tmp")
         torch.save({
-                "step": step,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": opt.state_dict(),
                 "lrs_state_dict": lrs.state_dict(),
-                "loss_history": hist_loss,
-                "val_history": hist_val,
-                "lr_history": hist_lr,
+                "history": history,
             }, tmppath)
         tmppath.replace(savepath)
 
-    step = 0
-    hist_loss = []
-    hist_val = []       # (step, validation loss)
-    hist_lr = []
+    history = []
     if not overwrite and pathlib.Path(savepath).exists():
         state = torch.load(savepath, map_location=device)
+        if "history" not in state:
+            raise ValueError(f"{savepath} was written in an older checkpoint "
+                             f"format; retrain from scratch with --overwrite")
         model.load_state_dict(state["model_state_dict"])
         opt.load_state_dict(state["optimizer_state_dict"])
         lrs.load_state_dict(state["lrs_state_dict"])
-        step = state["step"]
-        hist_loss = state["loss_history"]
-        hist_val = state["val_history"]
-        hist_lr = state["lr_history"]
-        print(f"resuming from {savepath} at step {step}", flush=True)
+        history = state["history"]
+        print(f"resuming from {savepath} at step {len(history)}", flush=True)
     else:
         print("training from scratch", flush=True)
     # seeded by the global step so a resumed run draws new windows instead of
     # replaying the ones already trained on
-    rng = np.random.default_rng([seed, step])
+    rng = np.random.default_rng([seed, len(history)])
     model.train()
 
-    try:
-        for step_ in range(steps):
-            xs = healthy_batch(rng, pool_train, length, batch_size)
-            opt.zero_grad()
-            loss = _batch_loss(model, xs, device)
-            loss.backward()
-            opt.step()
-            step += 1
-            hist_loss.append(loss.item())
-            if (step_ + 1) % sched_every == 0:
-                loss_val = validate()
-                hist_val.append((step, loss_val))
-                lrs.step(loss_val)
-                print(f"step {step_ + 1}/{steps}  loss {np.mean(hist_loss[-sched_every:]):.4f}"
-                      f"  val {loss_val:.4f}  lr {lrs.get_last_lr()[0]:.2e}", flush=True)
-            hist_lr.append(lrs.get_last_lr())
+    # An interrupt only requests a stop, which is honoured between steps, so
+    # that the saved states and the history always describe the same step.
+    stop_requested = False
+    def request_stop(signum, frame):
+        nonlocal stop_requested
+        stop_requested = True
+        print("Interrupted, stopping after the current step...", flush=True)
+    sigint_handler = signal.signal(signal.SIGINT, request_stop)
 
-            if (step_ + 1) % ckpt_every == 0:
-                save()
-            if opt.param_groups[0]["lr"] < min_lr:
-                print(f"stopping early at step {step_ + 1}: lr below {min_lr:g}",
-                      flush=True)
-                break
-    except KeyboardInterrupt:
-        print("Training was interrupted early...")
+    for step_ in range(steps):
+        if stop_requested:
+            break
+        record = {"lr": opt.param_groups[0]["lr"]}
+        xs = healthy_batch(rng, pool_train, length, batch_size)
+        opt.zero_grad()
+        loss = _batch_loss(model, xs, device)
+        loss.backward()
+        opt.step()
+        record["loss"] = loss.item()
+        if (step_ + 1) % sched_every == 0:
+            record["val"] = validate()
+            lrs.step(record["val"])
+        history.append(record)
+
+        if "val" in record:
+            loss_mean = np.mean([r["loss"] for r in history[-sched_every:]])
+            print(f"step {step_ + 1}/{steps}  loss {loss_mean:.4f}"
+                  f"  val {record['val']:.4f}  lr {lrs.get_last_lr()[0]:.2e}",
+                  flush=True)
+        if (step_ + 1) % ckpt_every == 0:
+            save()
+        if opt.param_groups[0]["lr"] < min_lr:
+            print(f"stopping early at step {step_ + 1}: lr below {min_lr:g}",
+                  flush=True)
+            break
+    signal.signal(signal.SIGINT, sigint_handler)
 
     save()
     print(f"saved {savepath}", flush=True)
@@ -222,30 +232,44 @@ def load_model(dataname: data.DataName = data.DataName.UNSW) -> MLSignalModel:
 
 
 # --- held-out healthy pool ---------------------------------------------------
-def load_noise_pool(dataname: data.DataName, n_files: int = 10):
-    """Load healthy signals to train on, excluding the recording used as the
-    test healthy component in `ex_signature_recovery`."""
+# Recordings never used for training, in addition to the test recording of
+# `experiments.synth.SIGNAL_ID_MAP`.
+HELD_OUT = {
+    data.DataName.UNSW: ("Test 1/6Hz/vib_000005667_06.mat",),
+    data.DataName.UIA: (),
+    data.DataName.CWRU: (),
+}
+
+
+def noise_pool_ids(dataname: data.DataName, n_files: int = 10) -> list[str]:
+    """Identifiers of the healthy recordings to train on: the `n_files`
+    earliest recordings of the dataset that are not held out. UNSW and UiA are
+    run-to-failure tests whose file names sort chronologically, so the earliest
+    recordings are the closest to a healthy bearing."""
     from experiments.synth import SIGNAL_ID_MAP
-    test_id = SIGNAL_ID_MAP[dataname]
-    dl = data.dataloader(dataname)
     dp = data.data_path(dataname)
     match dataname:
         case data.DataName.UNSW:
-            candidates = itertools.islice(
-                glob.iglob("Test 1/6Hz/*.mat", root_dir=dp), n_files + 1)
+            candidates = sorted(glob.iglob("Test 1/6Hz/*.mat", root_dir=dp))
         case data.DataName.UIA:
-            exclude_idx = ["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
-            candidates = filter(
-                    lambda x: "1000rpm" in x
-                    and not pathlib.Path(x) in map(pathlib.Path, exclude_idx),
-                glob.iglob("y2016-m09-d20/*.h5", root_dir=dp))
+            candidates = sorted(x for x in glob.iglob("y2016-m09-d20/*.h5", root_dir=dp)
+                                if "1000rpm" in x)
         case data.DataName.CWRU:
-            exclude_idx = ["099"]
-            candidates = ["097", "098", "100"] # "099" excluded
+            candidates = ["097", "098", "099", "100"]
         case _:
             raise NotImplementedError(f"noise pool not defined for {dataname}")
-    ids = [c for c in candidates
-           if pathlib.Path(c) != pathlib.Path(test_id)][:n_files]
+    held_out = {pathlib.Path(i)
+                for i in (SIGNAL_ID_MAP[dataname], *HELD_OUT[dataname])}
+    return [c for c in candidates if pathlib.Path(c) not in held_out][:n_files]
+
+
+def load_noise_pool(dataname: data.DataName, n_files: int = 10):
+    """Load healthy signals to train on, excluding the recording used as the
+    test healthy component in `ex_signature_recovery` and those in `HELD_OUT`.
+    The last one loaded is the latest, which `train` holds out for
+    validation."""
+    ids = noise_pool_ids(dataname, n_files)
+    dl = data.dataloader(dataname)
     pool = [np.asarray(dl[i].vib.y, dtype=np.float64) for i in ids]
     print(f"loaded {len(pool)} held-out healthy signals:")
     for i in ids:
@@ -265,17 +289,16 @@ def plot_history(name: data.DataName):
     """Plot the model training history for a dataset"""
     import matplotlib.pyplot as plt
     savepath = model_filepath(name)
-    state = torch.load(savepath, map_location="cpu")
-    step = state["step"]
-    loss_history = state["loss_history"]
-    val_steps, val_loss = zip(*state["val_history"]) if state["val_history"] else ((), ())
-    lr_history = np.ravel(state["lr_history"])
+    history = torch.load(savepath, map_location="cpu")["history"]
+    steps = range(1, len(history) + 1)
+    val_steps = [i for i, r in zip(steps, history) if "val" in r]
 
     fig, ax = plt.subplots(1, 1)
     ax2 = ax.twinx()
-    ax.plot(range(step), loss_history, label="loss")
-    ax.plot(val_steps, val_loss, label="validation loss")
-    ax2.plot(range(step), lr_history, label="lr", color="k", ls="--")
+    ax.plot(steps, [r["loss"] for r in history], label="loss")
+    ax.plot(val_steps, [history[i - 1]["val"] for i in val_steps],
+            label="validation loss")
+    ax2.plot(steps, [r["lr"] for r in history], label="lr", color="k", ls="--")
     ax2.set_yscale("log")
     plt.title(f"training history for\n\"{name}\" dataset")
     fig.legend()
