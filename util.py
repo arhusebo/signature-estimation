@@ -25,7 +25,8 @@ def get_armodel(dataset: data.DataName) -> ARModel:
 
 @cache
 def get_mlmodel(dataset: data.DataName) -> ml.MLSignalModel:
-    return ml.MLSignalModel(ml.Model.load(ml.model_filepath(dataset)))
+    """The healthy-signal predictor (ml)."""
+    return ml.load_model(dataset)
 
 
 @cache
