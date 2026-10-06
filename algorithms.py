@@ -43,11 +43,6 @@ def irfs(params: IRFSParams,
     subsequent iterations of IRFS"""
 
     # energy detector to estimate initial set of EOTs
-    eoi0 = enedetloc(data=signal,
-                     search_intervals=[(params.fmin, params.fmax)],
-                     enedetsize=params.ed_window,
-                     hysteresis=params.hyst_ed)
-    
     det0 = sig.EnergyDetector(params.ed_window)
     stat0 = det0.statistic(signal)
     thr0, _ = utl.best_threshold(data=stat0,
