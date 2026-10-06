@@ -18,6 +18,7 @@ Train:  python -m ml2 unsw -s 4000        # -> models/unsw_ml2.pt
 import argparse
 import glob
 import pathlib
+import time
 
 import numpy as np
 import torch
@@ -148,6 +149,9 @@ def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
         hist_lr = state["lr_history"]
     model.train()
 
+    time_start = time.monotonic()
+    time_prev_step = time_start
+
     try:
         for step_ in range(steps):
             xs, ts = synth_batch(rng, noise_pool, length, batch_size)
@@ -163,10 +167,16 @@ def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
             hist_loss.append(loss.item())
             lrs.step(loss.detach())
             hist_lr.append(lrs.get_last_lr())
-            
-            if (step_ + 1) % 100 == 0:
+
+            if time.monotonic()-time_prev_step>10.0:
+                time_prev_step = time.monotonic()
                 print(f"step {step_ + 1}/{steps}  loss {np.mean(hist_loss[-100:]):.4f}",
+                      f", time elapsed: {time_prev_step-time_start:.1f}s",
                       flush=True)
+            
+            #if (step_ + 1) % 100 == 0:
+            #    print(f"step {step_ + 1}/{steps}  loss {np.mean(hist_loss[-100:]):.4f}",
+                       #          flush=True)
     except KeyboardInterrupt:
         print("Training was interrupted early...")
 
@@ -178,7 +188,8 @@ def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
             "loss_history": hist_loss,
             "lr_history": hist_lr,
         }, savepath)
-    print(f"saved {savepath}", flush=True)
+    print(f"saved {savepath}, session lasted for {time_prev_step-time_start:.1f}s",
+          flush=True)
     return model
 
 
