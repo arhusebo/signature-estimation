@@ -131,7 +131,10 @@ def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
     rng = np.random.default_rng(seed)
     model = Denoiser().to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
-    lrs = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=0.5)
+    lrs = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, factor=0.5, patience=5, threshold=1e-3, min_lr=1e-5)
+
+    LOSS_MEAN_STEPS = 200
     
     step = 0
     hist_loss = []
@@ -165,7 +168,11 @@ def train(noise_pool, savepath, steps=4000, batch_size=16, length=8192,
             opt.step()
             step += 1
             hist_loss.append(loss.item())
-            lrs.step(loss.detach())
+
+            # Handle scheduler stepping
+            if step_%LOSS_MEAN_STEPS==0:
+                loss_mean = np.mean(hist_loss[-LOSS_MEAN_STEPS:])
+                lrs.step(loss_mean)
             hist_lr.append(lrs.get_last_lr())
 
             if time.monotonic()-time_prev_step>10.0:
