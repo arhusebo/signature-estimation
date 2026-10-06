@@ -221,10 +221,11 @@ def medest(x: npt.ArrayLike, f0: npt.ArrayLike, its: int=10) -> np.ndarray:
         X[l][l:] = x[:-l]
     
     f = f0
+    XX = X@X.T
     for i in range(its):
         y = X.T@f
         fa = np.sum(y**2)/np.sum(y**4)
-        fb = np.linalg.solve(X@X.T, X@(y**3).T)
+        fb = np.linalg.solve(XX, X@(y**3))
         f = fa*fb
     return f
 
