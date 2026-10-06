@@ -235,7 +235,7 @@ def load_noise_pool(dataname: data.DataName):
             raise NotImplementedError(f"noise pool not defined for {dataname}")
     
     if pathlib.Path(test_id) in map(pathlib.Path, candidates):
-        print("one held-out was signal skipped for use in experiments")
+        print("one held-out signal was skipped for use in experiments")
 
     ids = [c for c in candidates
            if pathlib.Path(c) != pathlib.Path(test_id)]
@@ -293,4 +293,4 @@ if __name__ == "__main__":
     pool = load_noise_pool(dataname)
     train(pool, model_filepath(dataname), steps=args.steps,
           batch_size=args.batch, length=args.length, device=device,
-          overwrite=args.overwrite, lr=args.learning_rate)
+          overwrite=args.overwrite, lr=args.lr)
