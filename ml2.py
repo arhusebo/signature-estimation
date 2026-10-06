@@ -17,7 +17,6 @@ Train:  python -m ml2 unsw -s 4000        # -> models/unsw_ml2.pt
 
 import argparse
 import glob
-import itertools
 import pathlib
 
 import numpy as np
@@ -218,7 +217,7 @@ def load_model(dataname: data.DataName = data.DataName.UNSW) -> ML2SignalModel:
 
 
 # --- held-out healthy pool ---------------------------------------------------
-def load_noise_pool(dataname: data.DataName, n_files: int = 10):
+def load_noise_pool(dataname: data.DataName):
     """Load healthy signals to draw the noise floor from during training,
     excluding the recording used as the test healthy component in
     `ex_signature_recovery`."""
@@ -228,21 +227,18 @@ def load_noise_pool(dataname: data.DataName, n_files: int = 10):
     dp = data.data_path(dataname)
     match dataname:
         case data.DataName.UNSW:
-            candidates = itertools.islice(
-                glob.iglob("Test 1/6Hz/*.mat", root_dir=dp), n_files + 1)
-        case data.DataName.UIA:
-            exclude_idx = ["y2016-m09-d20/00-13-28 1000rpm - 51200Hz - 100LOR.h5"]
-            candidates = filter(
-                    lambda x: "1000rpm" in x
-                    and not pathlib.Path(x) in map(pathlib.Path, exclude_idx),
-                glob.iglob("y2016-m09-d20/*.h5", root_dir=dp))
-        case data.DataName.CWRU:
-            exclude_idx = ["099"]
-            candidates = ["097", "098", "100"] # "099" excluded
+            # Take a few of the oldest signals.
+            # There should be healthy.
+            candidates = sorted(
+                    glob.iglob("Test 1/6Hz/*.mat", root_dir=dp))[:10]
         case _:
             raise NotImplementedError(f"noise pool not defined for {dataname}")
+    
+    if pathlib.Path(test_id) in map(pathlib.Path, candidates):
+        print("one held-out was signal skipped for use in experiments")
+
     ids = [c for c in candidates
-           if pathlib.Path(c) != pathlib.Path(test_id)][:n_files]
+           if pathlib.Path(c) != pathlib.Path(test_id)]
     pool = [np.asarray(dl[i].vib.y, dtype=np.float64) for i in ids]
     print(f"loaded {len(pool)} held-out healthy signals:")
     for i in ids:
