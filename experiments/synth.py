@@ -413,7 +413,7 @@ def ex_ordf(arg):
             "snr": 0.005,
             "anomalous": 0,
         }
-    return ex_indep_var("fsize", indep_var, ex_params)(arg)
+    return ex_indep_var("ordf", indep_var, ex_params)(arg)
 
 
 @experiment(OUTPUT_PATH, json=True)
@@ -476,6 +476,8 @@ def present_experiment(indep: IndependentVarname, dep: DependentVarname,
             ax.set_xlabel("Fault size [Samples]")
         case "ordf":
             ax.set_xlabel("Fault order [X]")
+        case "sig_f":
+            ax.set_xlabel("Resonance frequency [Hz]")
   
 
     match dep:
