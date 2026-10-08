@@ -100,32 +100,28 @@ def benchmark_experiment(dataname: data.DataName, signal_id: str,
     dl = data.dataloader(dataname)
 
     armodel = util.get_armodel(dataname)
-    mlmodel = util.get_mlmodel(dataname)
 
     signalt = dl[signal_id].vib
     signal = sig.Signal.from_uniform_samples(signalt.y, (params.rpm/60)/signalt.fs)
 
     resid_ar = armodel.residuals(signal)
-    # resid_ml = resid_ar # for verifying method still works like before
-    resid_ml = mlmodel.residuals(signal)
-
-    #score_med_results = algorithms.score_med(resid_ml, params.med_filtsize, [(ordmin, ordmax)])
-    #residf = score_med_results["filtered"]
 
     # IRFS method.
-    irfs = algorithms.irfs(params.irfs, resid_ml)
+    irfs = algorithms.irfs(params.irfs, resid_ar)
     for i, irfs_result in enumerate(irfs):
         if i >= 3: break
 
+    # Estimate the vibration signature (not residuals)
+    # The indices are shifted by the order of the AR filter
     irfs_sigest = utl.estimate_signature(signal, params.siglen,
-                                         indices=irfs_result.eoi,
+                                         indices=irfs_result.eoi + armodel.p,
                                          weights=irfs_result.certainty,)
 
     if IRFS_PEAK_DETECTION:
         # Use peak-detection method for IRFS
-        irfs_out = np.correlate(resid_ml.y, irfs_result.sigest, mode="valid")
-        irfs_filt = sig.Signal(irfs_out, resid_ml.x[:-len(irfs_result.sigest)+1],
-                               resid_ml.uniform_samples)
+        irfs_out = np.correlate(resid_ar.y, irfs_result.sigest, mode="valid")
+        irfs_filt = sig.Signal(irfs_out, resid_ar.x[:-len(irfs_result.sigest)+1],
+                               resid_ar.uniform_samples)
         def irfs_weight(spos):
             z = evt.map_circle(irfs_result.freq, spos)
             u = scipy.stats.vonmises.pdf(z, irfs_result.kappa, loc=irfs_result.mu)
@@ -228,11 +224,11 @@ def uia() -> list[Benchmark]:
     ordc = 6.7087166
     siglen = 200
     sigshift = -20
-    irfs_params = algorithms.IRFSParams(fmin=ordc-0.1, fmax=ordc+0.1,
+    irfs_params = algorithms.IRFSParams(fmin=ordc-0.2, fmax=ordc+0.2,
                                         signature_length=siglen,
                                         signature_shift=sigshift,
                                         hyst_ed=0.8,
-                                        hyst_mf=0.9)
+                                        hyst_mf=0.15)
     benchmark_params = BenchmarkParams(rpm=1000,
                                        siglen=siglen,
                                        sigshift=sigshift,
@@ -262,7 +258,8 @@ def unsw() -> list[Benchmark]:
     irfs_params = algorithms.IRFSParams(fmin=ordc-0.5, fmax=ordc+0.5,
                                         signature_length=siglen,
                                         signature_shift=sigshift,
-                                        hyst_ed=0.8)
+                                        hyst_ed=0.8,
+                                        hyst_mf=0.15)
     benchmark_params = BenchmarkParams(rpm=360,
                                        siglen=siglen,
                                        sigshift=sigshift,
@@ -298,7 +295,8 @@ def cwru() -> list[Benchmark]:
         irfs_params = algorithms.IRFSParams(fmin=ordc-0.5, fmax=ordc+0.5,
                                             signature_length=siglen,
                                             signature_shift=sigshift,
-                                            hyst_ed=0.8)
+                                            hyst_ed=0.8,
+                                            hyst_mf=0.15)
         benchmark_params = BenchmarkParams(rpm=dl_entry["rpm"],
                                            siglen=siglen,
                                            sigshift=sigshift,
@@ -352,15 +350,24 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
     fig, ax = plt.subplots(nrows=nrows, ncols=2, sharey=False,# sharex='col',
                            gridspec_kw={"width_ratios":[3, 2]},
                            figsize=(3.5, 2.5))
+    
+    # Limit x-axis by the number of IRFS-detected events
+
     for i, (idx, results) in enumerate(zip(include_idx, results_to_show)):
 
+        irfs_res = next(filter(lambda mo: mo["name"]=="IRFS",
+                        results["method_outputs"]))
+
+        xmax = len(irfs_res["detections"])
+        ax[i][0].set_xlim(0, xmax)
+        ymin = 1.0
         for method_output in results["method_outputs"]:
             frac = method_output["magnitudes"]/method_output["detections"]
             ax[i][0].plot(method_output["detections"], frac, label=method_output["name"],)
                           #lw=0.5)
+            if (a := min(frac[:xmax]))<ymin: ymin = a
+        ax[i][0].set_ylim(ymin, 1.0)
         #ax[i][0].axvline(results["events_max"], label="Max events", ls=":", c="grey")
-        irfs_res = next(filter(lambda mo: mo["name"]=="IRFS",
-                        results["method_outputs"]))
         #ax[i][0].axvline(len(irfs_res["detections"]), label="IRFS detections", ls="--", c="k")
         if i == nrows-1:
             ax[i][0].set_xlabel("Detections")
@@ -371,7 +378,6 @@ def present_benchmarks(list_benchmarks: list[Benchmark], n: int | None = None,
         if show_names:
             ax[i][0].set_title(f'{results["signal_id"]} ({idx})')
 
-        ax[i][0].set_xlim(0, len(irfs_res["detections"]))
         ax[i, 0].grid(which="both")
 
         sigest = results["irfs"]["sigest"]
@@ -400,6 +406,7 @@ def present_uia_all(results: list[Benchmark]):
 @presentation(unsw)
 def present_unsw(results: list[Benchmark]):
     from itertools import batched
+    #indices = [47, 8, 73]
     indices = [10, 56, 63]
     for ids in batched(indices, 3):
         present_benchmarks(results, include_idx=ids, dx=1/51200)
@@ -412,7 +419,8 @@ def present_unsw_all(results: list[Benchmark]):
 
 @presentation(cwru)
 def present_cwru(results: list[Benchmark]):
-    indices = [5, 7, 10]
+    #indices = [5, 7, 10]
+    indices = [4, 5, 6]
     present_benchmarks(results, include_idx=indices, dx=1/48000)
 
 @presentation(cwru)
